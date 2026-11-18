@@ -46,7 +46,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/rewrite", "Mock proposal: /rewrite <replacement text>"),
     ("/find", "Find text: /find <text>"),
     ("/replace", "Replace all: /replace <old> <new>"),
-    ("/version", "Display Queditor version"),
+    ("/version", "Display Qued version"),
     ("/help", "Available commands"),
 ];
 
@@ -263,6 +263,10 @@ pub struct App {
     pub popup_choice_start: usize,
     pub popup_selected: usize,
     pub animation_frame: usize,
+    pub question_buttons: Vec<(Rect, crate::questions::Action)>,
+    pub(crate) question_input_rows: Vec<(Rect, ComposerRow)>,
+    pub question_scroll: usize,
+    pub question_follow: bool,
 }
 
 pub struct ConnectWizard {
@@ -417,6 +421,10 @@ impl App {
             popup_choice_start: 0,
             popup_selected: 0,
             animation_frame: 0,
+            question_buttons: vec![],
+            question_input_rows: vec![],
+            question_scroll: 0,
+            question_follow: true,
         };
         if app.config.model == "mock" {
             app.message("system", "Mock backend — no network requests or AI inference. Use /demo or /rewrite to test safe edit review. /models selects a live provider.");
@@ -499,6 +507,14 @@ impl App {
         // Escape is the universal, highest-priority interrupt while an agent is active.
         if key.code == KeyCode::Esc && self.busy() {
             self.cancel_live();
+            return;
+        }
+        if self.live.question.is_some() && self.pending.is_none() && self.save_prompt.is_none() {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                self.request(Pending::Quit);
+            } else {
+                self.question_key(key);
+            }
             return;
         }
         if self.save_prompt.is_some() {
@@ -685,7 +701,7 @@ impl App {
             "copy" | "cut" => {
                 if let Some(text) = self.document.selected_text() {
                     self.clipboard = text.into();
-                    self.notify(Level::Success, "Copied to Queditor's internal clipboard");
+                    self.notify(Level::Success, "Copied to Qued's internal clipboard");
                     if action == "cut" {
                         self.document.insert("");
                     }
@@ -705,7 +721,7 @@ impl App {
         if action == Some("copy") || ctrl && matches!(key.code, KeyCode::Char('c' | 'C')) {
             if let Some(text) = self.chat_selected_text() {
                 self.clipboard = text;
-                self.notify(Level::Success, "Copied to Queditor's internal clipboard");
+                self.notify(Level::Success, "Copied to Qued's internal clipboard");
             }
             return;
         }
@@ -1003,6 +1019,14 @@ impl App {
     }
 
     fn paste_inner(&mut self, text: &str) {
+        if self.pending.is_none()
+            && self.save_prompt.is_none()
+            && let Some(prompt) = self.live.question.as_mut()
+        {
+            prompt.state.insert(text);
+            self.question_follow = true;
+            return;
+        }
         if self.save_prompt.is_some() {
             self.save_prompt_insert(text);
             return;
@@ -1339,7 +1363,7 @@ impl App {
                 }
                 self.message("keys", text);
             }
-            "/version" => self.message("version", concat!("queditor ", env!("CARGO_PKG_VERSION"))),
+            "/version" => self.message("version", concat!("qued ", env!("CARGO_PKG_VERSION"))),
             "/help" => self.message(
                 "help",
                 COMMANDS
@@ -2202,6 +2226,227 @@ impl App {
         prompt.error = None;
     }
 
+    fn question_key(&mut self, key: KeyEvent) {
+        use crate::questions::Action;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if alt && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            self.resolve_question_action(if key.code == KeyCode::Left {
+                Action::Previous
+            } else {
+                Action::Next
+            });
+            return;
+        }
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+            self.question_scroll = self
+                .question_scroll
+                .saturating_add_signed(if key.code == KeyCode::PageUp { -8 } else { 8 });
+            self.question_follow = false;
+            return;
+        }
+        let editing = self.live.question.as_ref().unwrap().state.editing;
+        if ctrl && key.code == KeyCode::Char('c') {
+            let selected = if editing {
+                self.live
+                    .question
+                    .as_ref()
+                    .unwrap()
+                    .state
+                    .input()
+                    .and_then(|input| input.selection().map(|range| input.text[range].to_owned()))
+            } else {
+                None
+            };
+            if let Some(text) = selected {
+                self.clipboard = text;
+            } else {
+                self.cancel_live();
+            }
+            return;
+        }
+        self.question_follow = true;
+        if key.code == KeyCode::BackTab || key.code == KeyCode::Tab {
+            let state = &mut self.live.question.as_mut().unwrap().state;
+            state.error = None;
+            if state.editing {
+                state.editing = false;
+            } else {
+                let count = state.actions().len();
+                state.selected = if key.code == KeyCode::BackTab || shift {
+                    (state.selected + count - 1) % count
+                } else {
+                    (state.selected + 1) % count
+                };
+            }
+            return;
+        }
+        if editing {
+            if key.code == KeyCode::Enter && !shift && !alt {
+                self.resolve_question_action(Action::Next);
+                return;
+            }
+            if ctrl && key.code == KeyCode::Char('j') || key.code == KeyCode::Enter && shift {
+                self.live.question.as_mut().unwrap().state.insert("\n");
+                return;
+            }
+            if ctrl && key.code == KeyCode::Char('v') {
+                let clipboard = self.clipboard.clone();
+                self.live
+                    .question
+                    .as_mut()
+                    .unwrap()
+                    .state
+                    .insert(&clipboard);
+                return;
+            }
+            if let KeyCode::Char(c) = key.code
+                && !ctrl
+                && !alt
+            {
+                self.live
+                    .question
+                    .as_mut()
+                    .unwrap()
+                    .state
+                    .insert(&c.to_string());
+                return;
+            }
+            let input_width = self
+                .question_input_rows
+                .first()
+                .map(|(area, _)| usize::from(area.width))
+                .unwrap_or(80)
+                .max(1);
+            self.live.question.as_mut().unwrap().state.error = None;
+            let input = self
+                .live
+                .question
+                .as_mut()
+                .unwrap()
+                .state
+                .input_mut()
+                .unwrap();
+            match key.code {
+                KeyCode::Left if ctrl => input.word_left(shift),
+                KeyCode::Right if ctrl => input.word_right(shift),
+                KeyCode::Left => input.left(shift),
+                KeyCode::Right => input.right(shift),
+                KeyCode::Up | KeyCode::Down => {
+                    let rows = composer_rows(&input.text, input_width);
+                    let current = rows
+                        .iter()
+                        .rposition(|row| row.start <= input.cursor)
+                        .unwrap_or(0);
+                    let column =
+                        composer_display_width(&input.text[rows[current].start..input.cursor]);
+                    let target = if key.code == KeyCode::Up {
+                        current.saturating_sub(1)
+                    } else {
+                        (current + 1).min(rows.len() - 1)
+                    };
+                    input.move_to(
+                        composer_position_at_display(&input.text, rows[target], column),
+                        shift,
+                    );
+                }
+                KeyCode::Char('a' | 'A') if ctrl && shift => {
+                    input.move_to(0, false);
+                    input.move_to(input.text.len(), true);
+                }
+                KeyCode::Home if ctrl => input.move_to(0, shift),
+                KeyCode::End if ctrl => input.move_to(input.text.len(), shift),
+                KeyCode::Home | KeyCode::Char('a') => {
+                    input.move_to(input.line_start(input.line_column().0), shift)
+                }
+                KeyCode::End | KeyCode::Char('e') => {
+                    let row = input.line_column().0;
+                    input.move_to(input.line_start(row) + input.line(row).len(), shift);
+                }
+                KeyCode::Backspace => input.backspace(),
+                KeyCode::Delete => input.delete(),
+                KeyCode::Char('k') if ctrl => input.kill_line(),
+                KeyCode::Char('z') if ctrl => input.undo(),
+                KeyCode::Char('y') if ctrl => input.redo(),
+                KeyCode::Char('x') if ctrl => {
+                    if let Some(range) = input.selection() {
+                        self.clipboard = input.text[range].to_owned();
+                        input.insert("");
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            let state = &mut self.live.question.as_mut().unwrap().state;
+            match key.code {
+                KeyCode::Up => state.move_selection(-1),
+                KeyCode::Down => state.move_selection(1),
+                KeyCode::Enter => {
+                    let action = state.selected_action();
+                    self.resolve_question_action(action);
+                }
+                KeyCode::Left => self.resolve_question_action(Action::Previous),
+                KeyCode::Right => self.resolve_question_action(Action::Next),
+                KeyCode::Char(c @ '1'..='4') if !ctrl && !alt => {
+                    self.resolve_question_action(Action::Pick((c as u8 - b'1') as usize));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn question_mouse(&mut self, event: MouseEvent) {
+        match event.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.question_scroll = self.question_scroll.saturating_add_signed(
+                    if event.kind == MouseEventKind::ScrollUp {
+                        -3
+                    } else {
+                        3
+                    },
+                );
+                self.question_follow = false;
+            }
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some((area, row)) = self
+                    .question_input_rows
+                    .iter()
+                    .find(|(area, _)| area.contains((event.column, event.row).into()))
+                    .copied()
+                {
+                    self.resolve_question_action(crate::questions::Action::Input);
+                    if let Some(input) = self
+                        .live
+                        .question
+                        .as_mut()
+                        .and_then(|prompt| prompt.state.input_mut())
+                    {
+                        let position = composer_position_at_display(
+                            &input.text,
+                            row,
+                            usize::from(event.column - area.x),
+                        );
+                        input.move_to(
+                            position,
+                            event.kind == MouseEventKind::Drag(MouseButton::Left)
+                                || event.modifiers.contains(KeyModifiers::SHIFT),
+                        );
+                    }
+                } else if event.kind == MouseEventKind::Down(MouseButton::Left)
+                    && let Some((_, action)) = self
+                        .question_buttons
+                        .iter()
+                        .find(|(area, _)| area.contains((event.column, event.row).into()))
+                        .copied()
+                {
+                    self.resolve_question_action(action);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn save_prompt_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -2409,6 +2654,10 @@ impl App {
     }
 
     pub fn mouse(&mut self, event: MouseEvent) {
+        if self.live.question.is_some() && self.pending.is_none() && self.save_prompt.is_none() {
+            self.question_mouse(event);
+            return;
+        }
         if self.save_prompt.is_some() {
             return;
         }
@@ -3225,10 +3474,7 @@ mod tests {
         a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let message = a.messages.last().unwrap();
         assert_eq!(message.role, "version");
-        assert_eq!(
-            message.text,
-            format!("queditor {}", env!("CARGO_PKG_VERSION"))
-        );
+        assert_eq!(message.text, format!("qued {}", env!("CARGO_PKG_VERSION")));
         assert!(a.messages.iter().all(|message| message.role != "you"));
         assert!(a.composer.is_empty());
         assert_eq!(a.prompt_history.last().unwrap(), "/version");

@@ -9,7 +9,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use queditor::{app::App, ui};
+use qued::{app::App, ui};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
     io::{self, IsTerminal},
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     let mut app = App::new(args.file.as_deref())?;
     if args.check {
         println!(
-            "Queditor {} · {} · {} · {} agents · {} backend ({})",
+            "Qued {} · {} · {} · {} agents · {} backend ({})",
             env!("CARGO_PKG_VERSION"),
             app.config.theme,
             app.config.keybindings,
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        anyhow::bail!("Queditor needs an interactive terminal. Use --check for a startup check.");
+        anyhow::bail!("Qued needs an interactive terminal. Use --check for a startup check.");
     }
     let runtime = tokio::runtime::Runtime::new().context("Cannot initialize async runtime")?;
     let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -75,11 +75,11 @@ fn main() -> Result<()> {
         signal_hook::flag::register(signal, interrupted.clone())
             .context("Cannot install shutdown signal handler")?;
     }
-    let store = match queditor::storage::Store::new(queditor::storage::state_dir()) {
+    let store = match qued::storage::Store::new(qued::storage::state_dir()) {
         Ok(store) => Some(store),
         Err(_) => {
             app.notify(
-                queditor::app::Level::Warning,
+                qued::app::Level::Warning,
                 "Local state storage is unavailable; recovery and persistent permissions disabled",
             );
             None
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
         if state_changed && checkpoint.elapsed() >= Duration::from_secs(1) {
             if app.checkpoint_state().is_err() {
                 app.notify(
-                    queditor::app::Level::Warning,
+                    qued::app::Level::Warning,
                     "Local checkpoint failed; save the document explicitly",
                 );
                 redraw = true;

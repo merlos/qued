@@ -2,7 +2,7 @@
 
 ## Multi-provider library
 
-Queditor uses `genai` 0.7 rather than a provider-specific SDK. Its common streaming
+Qued uses `genai` 0.7 rather than a provider-specific SDK. Its common streaming
 and tool-call API supports native OpenAI, Anthropic, Gemini and Ollama protocols,
 plus gateways and OpenAI-compatible services. Library support is not a guarantee
 that every model supports tools or every provider account has been tested.
@@ -50,7 +50,7 @@ OpenAI-compatible. Credential choices are an environment-variable reference or a
 private plaintext fallback. API-key input is masked and never enters
 chat, session, or recovery history.
 
-Environment credentials use names inherited by `queditor`. Common names include
+Environment credentials use names inherited by `qued`. Common names include
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, and
 `OPEN_ROUTER_API_KEY`.
 Do not put key values in `config.yaml` or agent Markdown. `/connect` stores only the
@@ -94,6 +94,8 @@ A live prompt sends:
 - File/list results only after local permission approval.
 - Web results only after local permission to browse the exact URL. Fetching contacts
   that website and sends returned content to the selected AI provider.
+- Submitted answers to agent questions. Single answers send when selected/submitted;
+  batches send only after explicit confirmation of the summary.
 
 Selecting text marks it as important context and sends it with the next live prompt;
 the chat pane shows `Selected line X` for one line or the inclusive one-based range
@@ -103,8 +105,47 @@ selection or previously sent history. `/new` clears history for future requests;
 data. Switching providers sends committed history to the new provider on the next
 prompt. Start a new session if that would be inappropriate.
 
-Provider retention follows provider policy. Queditor requests `store: false` where
+Provider retention follows provider policy. Qued requests `store: false` where
 supported; this is not a universal no-retention guarantee.
+
+## Agent questions
+
+Live Chat and Agent modes expose the `question` tool. The agent can ask 1–8 questions
+in a batch, each with up to three suggested options and descriptions. Qued always
+adds **Other…** for a custom answer, including for an open question with no suggestions.
+The popup shows the requesting agent and provider; the agent waits while you answer.
+
+- Use Up/Down and Enter, a numbered option shortcut (1–4), or a mouse click to choose.
+- Choose Other to type. Enter submits that answer; Ctrl+J or Shift+Enter inserts a
+  newline. Bracketed paste never submits. Normal Unicode editing, Shift+arrow selection,
+  Ctrl+A/E line movement, Ctrl+K deletion, Ctrl+Shift+A select-all, internal clipboard
+  copy/cut/paste, and undo/redo work in the custom field.
+- Use **Alt+Left / Alt+Right** or the **Previous question / Next question** controls
+  to move back and forth. Left/Right also navigate when outside the text field.
+  Answers and custom-text drafts are retained when revisiting a question.
+- Tab/Shift+Tab move among choices/controls (Tab leaves a custom field); they do not
+  switch panes or rotate agents while the popup is open. PgUp/PgDn or the wheel scroll
+  long questions and summaries.
+- After the last question in a batch, **Review answers** displays all answers. Select
+  an answer to change it, or go back to the questions. **Confirm answers** sends the
+  entire batch. Merely viewing the summary does not send anything.
+- A single question sends immediately when a suggested answer is chosen or custom
+  text is submitted; there is no additional summary step.
+
+Escape cancels the whole agent turn and discards unfinished drafts and pending
+generated edits. Ctrl+C without a custom-text selection also cancels; with a selection
+it copies instead. Questionnaire input never directly edits the open document.
+Question waits count toward the existing thirty-minute turn deadline, not provider
+request time in usage metrics.
+
+Question text is limited to 2048 UTF-8 bytes, optional headers to 30 characters,
+option labels to 120 bytes, descriptions to 1024 bytes, and custom answers to 4096
+bytes per question. Answers are single-choice, not multi-select. Invalid requests
+return a tool error without opening a popup. Confirmed answers become provider
+context and visible chat; they can be saved with opt-in session persistence.
+Unfinished drafts remain in memory only, are not checkpointed, and are not restored.
+Answers do not grant file/network permissions. Mock mode and `/compact` do not use
+the question tool.
 
 ## Edits, cancellation, and limits
 
@@ -114,7 +155,7 @@ from either pane; Ctrl+G cycles modes without switching agents. These shortcuts
 select settings for subsequent prompts, not a new request or an editor change.
 Chat can answer, critique, and describe suggested revisions. Agent
 mode exposes `propose_edit` for a complete replacement of the open document.
-The shared system prompt puts Queditor's operating contract ahead of agent-specific
+The shared system prompt puts Qued's operating contract ahead of agent-specific
 writing guidance. It marks snapshots, files, fetched pages, workspace metadata, and
 summaries as untrusted context; states exact-URL browsing/file permission requirements;
 and prohibits unsupported claims of research, edits, saves, or publishing. Agent mode
@@ -123,7 +164,7 @@ information, not for questions or review-only requests. Custom personas receive 
 same shared guidance. These prompts guide model behavior; local tool permissions,
 Chat-mode tool restrictions, snapshot validation, and save guards remain enforced
 independently by the application.
-**On successful completion, Queditor validates the snapshot, applies the edit and
+**On successful completion, Qued validates the snapshot, applies the edit and
 saves the whole file before review**, including existing unsaved text. Unnamed
 documents use private temporary backing without changing their “[Untitled]” identity.
 Ctrl+S or `/save` opens Save As; once saved to a real filename, subsequent edits and
@@ -158,7 +199,7 @@ or exiting does not revert saved edits. Offline `/demo` and `/rewrite` still pro
 unsaved mock previews with explicit acceptance; they do not invoke a model.
 
 Escape from either pane always stops active generation, streaming, tool execution,
-provider waits, or permission waits and drops pending tool/proposal events. `/cancel`
+provider waits, or permission/question waits and drops pending tool/proposal events. `/cancel`
 and Ctrl+C in chat without selected text remain alternatives. With selected text,
 Ctrl+C copies instead of cancelling. Partial output remains visibly
 marked incomplete/cancelled and is not committed as model history. Cancellation
@@ -166,14 +207,14 @@ cannot undo provider processing or earlier transmissions, or revert a completed 
 edit. Use review Undo for pending saved changes.
 
 Limits per prompt: 100 generation rounds and 100 tool calls. A generation round is
-one model response; after executing its tool calls, Queditor asks the model again
+one model response; after executing its tool calls, Qued asks the model again
 with the results. The final answer also counts as a round. These caps prevent runaway
 loops, not account usage; longer runs can consume more tokens. Reaching either cap
 fails the request without applying pending edits.
 
 Other limits: 256 KiB attachments/open documents/file
 reads/web responses/proposed replacements, 1000 directory entries, 1 MiB generated/tool context, 60-second
-provider connection waits, thirty-minute header/stream-read waits, and a thirty-minute total deadline including permission
+provider connection waits, thirty-minute header/stream-read waits, and a thirty-minute total deadline including permission/question
 waits. No automatic retries, avoiding duplicate actions/billing.
 
 `/compact` summarizes committed history without tools, replacing model-facing
@@ -228,8 +269,13 @@ already-sent HTTP request.
 
 ## Local state and recovery
 
-On Linux/macOS, state lives in `$XDG_STATE_HOME/queditor/` or
-`~/.local/state/queditor/`. On Windows it lives in `%LOCALAPPDATA%\queditor`:
+On Linux/macOS, state lives in `$XDG_STATE_HOME/qued/` or
+`~/.local/state/qued/`. On Windows it lives in `%LOCALAPPDATA%\qued`:
+
+Only the `qued` state directory is used. To retain recovery snapshots, saved
+permissions, and persisted sessions from an earlier application name, manually
+move the previous state directory here while the editor is closed. No automatic
+migration or deletion occurs; preserve private file permissions.
 
 - `recovery-<instance-id>.json`: unsaved text, cursor, path and save baseline.
 - Additional `recovery-<uuid>.json` records: independent pre-agent-edit snapshots,

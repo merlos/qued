@@ -68,7 +68,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          binary="target/${{ matrix.target }}/release/queditor"
+          binary="target/${{ matrix.target }}/release/qued"
           "${binary}" --version
           "${binary}" --check
 
@@ -76,9 +76,9 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          if ldd "target/${{ matrix.target }}/release/queditor" 2>&1 | grep -q '=>'; then
+          if ldd "target/${{ matrix.target }}/release/qued" 2>&1 | grep -q '=>'; then
             echo "Linux release unexpectedly has shared-library dependencies" >&2
-            ldd "target/${{ matrix.target }}/release/queditor" >&2
+            ldd "target/${{ matrix.target }}/release/qued" >&2
             exit 1
           fi
 
@@ -86,8 +86,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & "target/${{ matrix.target }}/release/queditor.exe" --version
-          & "target/${{ matrix.target }}/release/queditor.exe" --check
+          & "target/${{ matrix.target }}/release/qued.exe" --version
+          & "target/${{ matrix.target }}/release/qued.exe" --check
 
       - name: Package release archive
         shell: bash
@@ -100,7 +100,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: queditor-${{ matrix.target }}
+          name: qued-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
@@ -120,7 +120,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: queditor-*
+          pattern: qued-*
           path: dist
           merge-multiple: true
 
@@ -138,5 +138,5 @@ jobs:
               dist/* \
               --verify-tag \
               --generate-notes \
-              --title "Queditor ${GITHUB_REF_NAME}"
+              --title "Qued ${GITHUB_REF_NAME}"
           fi

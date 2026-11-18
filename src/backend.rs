@@ -61,6 +61,10 @@ pub enum Event {
         target: Box<Target>,
         reply: oneshot::Sender<Option<Target>>,
     },
+    Question {
+        request: crate::questions::QuestionRequest,
+        reply: oneshot::Sender<Vec<crate::questions::Answer>>,
+    },
     Proposal(String),
     Done(Vec<ChatMessage>),
     Failed(String),
@@ -137,6 +141,8 @@ pub fn definitions() -> Vec<Tool> {
             .with_schema(json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false})),
         Tool::new("webfetch").with_description("Fetch a public HTTP(S) URL after user permission to browse. Returns UTF-8 text or HTML (no JavaScript). No credentials, redirects, or private-network access.")
             .with_schema(json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"],"additionalProperties":false})),
+        Tool::new("question").with_description("Ask the user 1–8 clarification questions. Each has 0–3 suggested options; Qued adds Other for a custom answer. Batches are reviewed and confirmed before any answers are returned. Ask before proposing edits; answers are context, not tool permission.")
+            .with_schema(crate::questions::schema()),
         Tool::new("propose_edit").with_description("Propose a complete replacement for the open document snapshot. Never saves or applies changes; the user reviews the diff explicitly.")
             .with_schema(json!({"type":"object","properties":{"replacement":{"type":"string"}},"required":["replacement"],"additionalProperties":false})),
     ]
@@ -157,7 +163,7 @@ pub async fn run(request: Request, sender: mpsc::Sender<Event>) {
         Ok(Ok(())) => return,
         Ok(Err(e)) => e.to_string(),
         Err(_) => format!(
-            "Agent request timed out after {} minutes (including permission waits)",
+            "Agent request timed out after {} minutes (including permission/question waits)",
             REQUEST_TIMEOUT.as_secs() / 60
         ),
     };
@@ -296,8 +302,12 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
                     }
                     sender.send(Event::Proposal(replacement.into())).await?;
                     proposed = true;
-                    Ok("Edit queued. Queditor will validate, apply and save it after successful completion, then show Keep/Undo review. It is not saved yet.".into())
+                    Ok(json!(
+                        "Edit queued. Qued will validate, apply and save it after successful completion, then show Keep/Undo review. It is not saved yet."
+                    ))
                 }
+            } else if call.fn_name == "question" {
+                answer_questions(call.fn_arguments.clone(), sender).await
             } else if matches!(
                 call.fn_name.as_str(),
                 "read_file" | "list_directory" | "webfetch"
@@ -337,6 +347,7 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
                     }
                     Err(e) => Err(e),
                 }
+                .map(Value::String)
             } else {
                 Err(anyhow::anyhow!("Unknown or prohibited tool"))
             };
@@ -356,6 +367,18 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
     }
 }
 
+async fn answer_questions(arguments: Value, sender: &mpsc::Sender<Event>) -> Result<Value> {
+    let request: crate::questions::QuestionRequest =
+        serde_json::from_value(arguments).context("Invalid question tool arguments")?;
+    request.validate()?;
+    let (reply, decision) = oneshot::channel();
+    sender.send(Event::Question { request, reply }).await?;
+    let answers = decision
+        .await
+        .context("Questionnaire closed; no edits applied")?;
+    Ok(json!({"answers": answers}))
+}
+
 fn string_arg<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
     let object = value
         .as_object()
@@ -372,6 +395,53 @@ fn string_arg<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn question_tool_waits_and_returns_structured_confirmed_answers() {
+        let (sender, mut events) = mpsc::channel(2);
+        let arguments = json!({"questions":[{"question":"Tone?","options":[{"label":"Formal"},{"label":"Friendly"}]}]});
+        let task = tokio::spawn(async move { answer_questions(arguments, &sender).await });
+        let Event::Question { request, reply } = events.recv().await.unwrap() else {
+            panic!("Expected question")
+        };
+        assert!(!task.is_finished());
+        let mut state = crate::questions::Questionnaire::new(request).unwrap();
+        reply
+            .send(state.act(crate::questions::Action::Pick(1)).unwrap())
+            .unwrap();
+        let result = task.await.unwrap().unwrap();
+        assert_eq!(result["answers"][0]["answer"], "Friendly");
+        assert_eq!(result["answers"][0]["option_index"], 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_questions_never_open_a_prompt_and_closed_requests_fail() {
+        let (sender, mut events) = mpsc::channel(2);
+        assert!(
+            answer_questions(json!({"questions":[]}), &sender)
+                .await
+                .is_err()
+        );
+        assert!(events.try_recv().is_err());
+        let task = tokio::spawn(async move {
+            answer_questions(
+                json!({"questions":[{"question":"Why?","options":[]}]}),
+                &sender,
+            )
+            .await
+        });
+        let Event::Question { reply, .. } = events.recv().await.unwrap() else {
+            panic!("Expected question")
+        };
+        drop(reply);
+        assert!(
+            task.await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("no edits applied")
+        );
+    }
 
     #[test]
     fn turn_budget_allows_long_tool_sequences_and_a_final_response() {

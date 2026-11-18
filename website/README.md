@@ -1,4 +1,4 @@
-# Queditor website
+# Qued website
 
 The marketing site and documentation portal use Astro and Starlight. Repository
 Markdown under `../docs/` is canonical; `npm run sync-docs` creates ignored
@@ -15,7 +15,7 @@ npm run build
 The default local base path is `/`. To reproduce the GitHub project-site build:
 
 ```sh
-SITE_URL=https://merlos.github.io BASE_PATH=/queditor npm run build
+SITE_URL=https://merlos.github.io BASE_PATH=/qued npm run build
 ```
 
 `.github/workflows/pages.yml` build-checks pull requests and deploys pushes to

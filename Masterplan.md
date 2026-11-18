@@ -1,9 +1,9 @@
-# Queditor architecture and delivery roadmap
+# Qued architecture and delivery roadmap
 
 ## Product decisions
 
 - Rust terminal application, one UTF-8 document at a time.
-- Application/configuration name: `queditor`; older `agenditor` names are draft typos.
+- Application, executable, release archive, and configuration/state directory name: `qued`.
 - Default theme: Catppuccin-inspired Mocha; contrasting daylight theme.
 - Preserve Markdown syntax in the editor; this is not a rich-text preview.
 - VS Code-style live Agent workflow: validated structured edits apply and save before
@@ -101,6 +101,12 @@ Reviewer feedback/revisions. `live` composes a shared operating contract and act
 mode ahead of persona guidance; compaction uses a separate tool-free prompt. Prompt
 regressions and local provider fixtures check delivery and boundaries, not model
 compliance or SEO outcomes. Permissions and transactional edits remain local controls.
+The `question` tool pauses the live backend on a typed request/reply channel while
+`questions` owns validated batches and in-memory drafts. The application/UI handles
+grapheme-safe custom input, Previous/Next navigation, and editable batch summaries;
+only a submitted single answer or explicitly confirmed batch returns structured
+answers. Drafts are excluded from checkpoints; cancellation closes the pending
+reply and discards edits. The thirty-minute turn deadline includes question waits.
 
 ### 4. Mock chat/context — basic implementation complete
 
@@ -146,7 +152,7 @@ Generation still rejects stale snapshots. Review does not delay saving or requir
 7. Introduce read/list tools with canonical paths, symlink checks, size/text limits,
    sensitive-file exclusions and scoped permission prompts.
 8. Add allow-once/session/persistent/deny plus saved-grant review and revocation.
-9. Do not grant shell execution, deletion, or arbitrary write tools. Queditor alone
+9. Do not grant shell execution, deletion, or arbitrary write tools. Qued alone
    applies/saves a validated complete-document edit to the open file or private
    temporary backing for an unnamed document.
 10. Add guided provider connection, endpoint-bound credentials, model discovery and
@@ -168,7 +174,7 @@ survive clean exit when recovery is enabled.
 
 An optional OpenCode V2 HTTP adapter requires a separate authenticated discovery
 and compatibility spike. Its experimental API surface must not be assumed stable,
-and its tools must not bypass Queditor review or local permissions.
+and its tools must not bypass Qued review or local permissions.
 
 ### 7. Release hardening — recovery/persistence implemented; remainder planned
 

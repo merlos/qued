@@ -19,6 +19,7 @@ pub struct Live {
     pub runtime: Option<Handle>,
     pub job: Option<Job>,
     pub permission: Option<PermissionPrompt>,
+    pub question: Option<QuestionPrompt>,
     pub history: Vec<ChatMessage>,
     pub permissions: Permissions,
     pub store: Option<Store>,
@@ -53,8 +54,15 @@ pub struct PermissionPrompt {
     reply: oneshot::Sender<Option<Target>>,
 }
 
+pub struct QuestionPrompt {
+    pub state: crate::questions::Questionnaire,
+    pub agent: String,
+    pub model: String,
+    pub(crate) reply: oneshot::Sender<Vec<crate::questions::Answer>>,
+}
+
 const SHARED_SYSTEM_PROMPT: &str = "\
-Queditor operating contract (takes precedence over agent-specific writing guidance):
+Qued operating contract (takes precedence over agent-specific writing guidance):
 - Follow the user's request and the active mode. Ask a focused question when missing
   information materially affects correctness; otherwise label reasonable assumptions.
 - Preserve the user's meaning, language, voice, existing metadata, and unrelated content.
@@ -68,19 +76,23 @@ Queditor operating contract (takes precedence over agent-specific writing guidan
   Request permission through the tool flow, never assume the user's wording grants
   access. Respect denials and sensitive-path exclusions; do not retry to evade them.
   Never send document text, secrets, or credentials in a URL to an external service.
+- Use the question tool for consequential clarification before proposing an edit.
+  Ask one or more focused questions with at most 3 suggested options each; Qued
+  adds Other for custom text and confirms batches. Do not invent answers or treat
+  confirmed answers as permission for file/network tools.
 - No shell execution, deletion, publishing, or arbitrary file writes are available.
   Use only the declared tools. Do not claim to have browsed, verified, edited, saved,
   or published anything unless actual tool/host results support that claim.";
 
 const CHAT_MODE_PROMPT: &str = "\
-Active mode: Queditor CHAT (read-only).
+Active mode: Qued CHAT (read-only).
 No document edit tool is available. Answer questions, critique text, outline, or
 show suggested changes in chat only. A current selection or pinned snapshot may
 be attached as important context. Do not call propose_edit or claim to have changed
 the document, even when the agent persona normally writes or revises documents.";
 
 const AGENT_MODE_PROMPT: &str = "\
-Active mode: Queditor AGENT.
+Active mode: Qued AGENT.
 The complete open document is attached as an immutable snapshot. A selected or
 pinned excerpt is especially important context but does not limit where you may edit.
 Only when the user requests a document change and the necessary details are known,
@@ -88,7 +100,7 @@ call propose_edit at most once with the complete resulting document, including a
 preserved content and frontmatter. Do not put explanation or an extra Markdown
 wrapper around the replacement. For questions or review-only requests, answer in
 chat without proposing an edit; ask before making speculative changes.
-propose_edit only queues an edit. After successful generation Queditor validates
+propose_edit only queues an edit. After successful generation Qued validates
 the snapshot, applies and saves the open document, and displays Keep/Undo review.
 Do not claim edits or saves succeeded before host confirmation. Ordinary chat text
 cannot modify the document.";
@@ -132,7 +144,9 @@ impl App {
     }
     pub fn activity_label(&self) -> Option<&'static str> {
         let job = self.live.job.as_ref()?;
-        if self.live.permission.is_some() {
+        if self.live.question.is_some() {
+            Some("Waiting for answers")
+        } else if self.live.permission.is_some() {
             Some("Waiting for permission")
         } else if job.proposal.is_some() {
             Some("Preparing edit")
@@ -332,6 +346,12 @@ impl App {
                     }
                 }
                 Event::Permission { target, reply } => {
+                    if self.live.question.is_some() {
+                        self.fail_live(
+                            "Agent requested another tool before answers were confirmed",
+                        );
+                        continue;
+                    }
                     if self.live.permissions.allows(&target) {
                         let _ = reply.send(Some(*target));
                     } else {
@@ -343,16 +363,55 @@ impl App {
                         self.popup_selected = 0;
                     }
                 }
+                Event::Question { request, reply } => {
+                    if self.live.question.is_some()
+                        || self.live.permission.is_some()
+                        || self.live.job.as_ref().is_some_and(|job| job.compact)
+                    {
+                        self.fail_live("Unexpected agent questionnaire; no edits applied");
+                        continue;
+                    }
+                    match crate::questions::Questionnaire::new(request) {
+                        Ok(state) => {
+                            let message = self
+                                .active_message_index()
+                                .and_then(|index| self.messages.get(index));
+                            let agent = message
+                                .and_then(|m| m.agent.clone())
+                                .unwrap_or_else(|| self.agents[self.agent].name.clone());
+                            let model = message
+                                .and_then(|m| m.model.clone())
+                                .unwrap_or_else(|| self.config.model.clone());
+                            self.live.question = Some(QuestionPrompt {
+                                state,
+                                agent,
+                                model,
+                                reply,
+                            });
+                            self.question_scroll = 0;
+                            self.question_follow = true;
+                            self.notify(Level::Info, "Agent asks questions · answers go to the requesting provider · Esc cancels");
+                        }
+                        Err(error) => self.fail_live(&format!("Invalid agent questions: {error}")),
+                    }
+                }
                 Event::Proposal(text) => {
                     if let Some(job) = &mut self.live.job {
                         job.proposal = Some(text);
                     }
                 }
                 Event::Done(history) => {
+                    if self.live.question.is_some() {
+                        self.fail_live(
+                            "Agent completed before answers were confirmed; no edits applied",
+                        );
+                        continue;
+                    }
                     let Some(job) = self.live.job.take() else {
                         continue;
                     };
                     self.live.permission = None;
+                    self.live.question = None;
                     if job.compact {
                         let summary = self
                             .messages
@@ -661,6 +720,7 @@ impl App {
             }
         }
         self.live.permission = None;
+        self.live.question = None;
         self.notify(Level::Error, error);
     }
 
@@ -677,6 +737,43 @@ impl App {
             );
         }
         self.live.permission = None;
+        self.live.question = None;
+    }
+
+    pub(crate) fn resolve_question_action(&mut self, action: crate::questions::Action) {
+        let Some(prompt) = self.live.question.as_mut() else {
+            return;
+        };
+        let page = prompt.state.page;
+        let answers = prompt.state.act(action);
+        self.question_follow = true;
+        if prompt.state.page != page {
+            self.question_scroll = 0;
+            self.question_buttons.clear();
+            self.question_input_rows.clear();
+        }
+        if let Some(answers) = answers {
+            let prompt = self.live.question.take().expect("Question prompt");
+            let summary = answers
+                .iter()
+                .enumerate()
+                .map(|(index, answer)| {
+                    format!("{}. {}\n   {}", index + 1, answer.question, answer.answer)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if prompt.reply.send(answers).is_ok() {
+                self.message("you", format!("Answers to {}:\n{summary}", prompt.agent));
+                self.notify(Level::Success, "Answers sent; agent continuing");
+            } else {
+                self.notify(
+                    Level::Warning,
+                    "Question request has closed; answers were not sent",
+                );
+            }
+            self.question_buttons.clear();
+            self.question_input_rows.clear();
+        }
     }
 
     fn finish_job_usage(&mut self, job: &mut Job) {
@@ -971,6 +1068,211 @@ impl Drop for Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn question_app(
+        count: usize,
+    ) -> (
+        tokio::runtime::Runtime,
+        App,
+        oneshot::Receiver<Vec<crate::questions::Answer>>,
+    ) {
+        let (runtime, mut app, sender) = job_app(None, false);
+        let (reply, decision) = oneshot::channel();
+        sender
+            .try_send(Event::Question {
+                request: crate::questions::tests::request(count),
+                reply,
+            })
+            .unwrap();
+        app.poll_live();
+        (runtime, app, decision)
+    }
+
+    #[test]
+    fn batch_question_answers_stay_local_until_confirmation_and_do_not_grant_tools() {
+        use crate::questions::Action;
+        let (_runtime, mut app, mut decision) = question_app(2);
+        assert_eq!(app.activity_label(), Some("Waiting for answers"));
+        app.resolve_question_action(Action::Pick(0));
+        app.resolve_question_action(Action::Pick(1));
+        assert!(matches!(
+            decision.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(app.live.history.is_empty());
+        app.resolve_question_action(Action::Edit(0));
+        app.resolve_question_action(Action::Pick(1));
+        app.resolve_question_action(Action::Next);
+        app.resolve_question_action(Action::Confirm);
+        let answers = decision.try_recv().unwrap();
+        assert_eq!(answers[0].answer, "Second");
+        assert!(app.live.question.is_none());
+        assert!(app.document.text.is_empty());
+        assert!(app.live.permissions.session.is_empty() && app.live.permissions.saved.is_empty());
+        assert!(
+            app.messages
+                .iter()
+                .any(|m| m.role == "you" && m.text.contains("Answers to Planner"))
+        );
+    }
+
+    #[test]
+    fn questionnaire_input_is_unicode_safe_preserves_editor_and_blocks_mode_rotation() {
+        use crate::questions::Action;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_runtime, mut app, mut decision) = question_app(2);
+        app.focus = crate::app::Focus::Editor;
+        app.document.insert("unchanged document");
+        app.composer = "unsent prompt".into();
+        let revision = app.document.revision;
+        let mode = app.agent_mode();
+        let agent = app.agent;
+        app.resolve_question_action(Action::Pick(2));
+        app.paste("界e\u{301}👩‍💻");
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(
+            app.live
+                .question
+                .as_ref()
+                .unwrap()
+                .state
+                .input()
+                .unwrap()
+                .text,
+            "界👩‍💻"
+        );
+        app.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.agent, agent);
+        assert_eq!(app.agent_mode(), mode);
+        app.resolve_question_action(Action::Next);
+        app.resolve_question_action(Action::Previous);
+        assert_eq!(
+            app.live
+                .question
+                .as_ref()
+                .unwrap()
+                .state
+                .input()
+                .unwrap()
+                .text,
+            "界👩‍💻"
+        );
+        assert_eq!(app.document.text, "unchanged document");
+        assert_eq!(app.document.revision, revision);
+        assert_eq!(app.composer, "unsent prompt");
+        assert!(matches!(
+            decision.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn escape_discards_question_drafts_and_pending_edits_without_late_history() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_runtime, mut app, mut decision) = question_app(1);
+        app.live.job.as_mut().unwrap().proposal = Some("must not apply".into());
+        app.resolve_question_action(crate::questions::Action::Pick(2));
+        app.paste("PRIVATE_UNCONFIRMED_ANSWER");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.busy());
+        assert!(app.live.question.is_none());
+        assert!(matches!(
+            decision.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(app.live.history.is_empty());
+        assert!(app.document.text.is_empty());
+        assert!(
+            !app.messages
+                .iter()
+                .any(|m| m.text.contains("PRIVATE_UNCONFIRMED_ANSWER"))
+        );
+    }
+
+    #[test]
+    fn premature_completion_and_compaction_question_requests_are_rejected() {
+        let (_runtime, mut app, sender) = job_app(None, false);
+        let (reply, _decision) = oneshot::channel();
+        sender
+            .try_send(Event::Question {
+                request: crate::questions::tests::request(1),
+                reply,
+            })
+            .unwrap();
+        sender
+            .try_send(Event::Done(vec![ChatMessage::user("must not commit")]))
+            .unwrap();
+        app.poll_live();
+        assert!(app.live.history.is_empty());
+        assert!(app.live.question.is_none());
+        assert!(matches!(app.level, Level::Error));
+        let (_runtime, mut app, sender) = job_app(None, true);
+        let (reply, _decision) = oneshot::channel();
+        sender
+            .try_send(Event::Question {
+                request: crate::questions::tests::request(1),
+                reply,
+            })
+            .unwrap();
+        app.poll_live();
+        assert!(app.live.question.is_none());
+        assert!(!app.busy());
+    }
+
+    #[test]
+    fn questionnaire_keeps_request_agent_and_provider_when_preferences_change() {
+        let (_runtime, mut app, _decision) = question_app(1);
+        app.agent = 1;
+        app.config.model = "mock".into();
+        let question = app.live.question.as_ref().unwrap();
+        assert_eq!(question.agent, "Planner");
+        assert_eq!(question.model, "ollama::fixture:26b");
+    }
+
+    #[test]
+    fn checkpoints_exclude_question_drafts_and_failure_closes_the_reply() {
+        let (_runtime, mut app, _decision) = question_app(1);
+        let dir = tempfile::tempdir().unwrap();
+        app.live.store = Some(Store::new(dir.path().join("state")).unwrap());
+        app.live.session_id = uuid::Uuid::new_v4().to_string();
+        app.config.persist_sessions = true;
+        app.config.recovery = false;
+        app.resolve_question_action(crate::questions::Action::Pick(2));
+        app.paste("UNCONFIRMED_SECRET_ANSWER");
+        app.checkpoint_state().unwrap();
+        let session = app
+            .live
+            .store
+            .as_ref()
+            .unwrap()
+            .resume(&app.live.session_id)
+            .unwrap();
+        assert!(
+            !serde_json::to_string(&session)
+                .unwrap()
+                .contains("UNCONFIRMED_SECRET_ANSWER")
+        );
+
+        let (_runtime, mut app, sender) = job_app(None, false);
+        let (reply, mut decision) = oneshot::channel();
+        sender
+            .try_send(Event::Question {
+                request: crate::questions::tests::request(1),
+                reply,
+            })
+            .unwrap();
+        app.poll_live();
+        sender
+            .try_send(Event::Failed("Agent request timed out".into()))
+            .unwrap();
+        app.poll_live();
+        assert!(app.live.question.is_none());
+        assert!(!app.busy());
+        assert!(matches!(
+            decision.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+    }
     #[test]
     fn system_prompt_includes_persona_under_shared_contract_for_each_mode() {
         let workspace = std::path::Path::new("/workspace");

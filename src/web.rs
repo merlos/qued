@@ -91,7 +91,7 @@ async fn fetch_inner(url: Url) -> Result<String> {
         .resolve_to_addrs(host, &addresses)
         .timeout(TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
-        .user_agent(concat!("queditor/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("qued/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|_| anyhow::anyhow!("Could not initialize web client"))?;
     fetch_text(&client, url).await

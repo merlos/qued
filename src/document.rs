@@ -190,7 +190,7 @@ impl Document {
         if candidate.path.is_none() && candidate.temporary.is_none() {
             candidate.disk_baseline = None;
             let directory = tempfile::Builder::new()
-                .prefix("queditor-agent-")
+                .prefix("qued-agent-")
                 .tempdir()
                 .context("Cannot create private temporary document")?;
             #[cfg(unix)]

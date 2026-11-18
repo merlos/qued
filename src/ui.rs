@@ -14,6 +14,8 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.question_buttons.clear();
+    app.question_input_rows.clear();
     app.review_buttons.clear();
     app.review_row_hunks.clear();
     let area = frame.area();
@@ -39,6 +41,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             save_prompt(frame, app);
         } else if app.pending.is_some() {
             confirmation(frame, app);
+        } else if app.live.question.is_some() {
+            questions(frame, app);
         } else if app.live.permission.is_some() {
             permission(frame, app);
         } else if app.connect.is_some() {
@@ -128,6 +132,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         save_prompt(frame, app);
     } else if app.pending.is_some() {
         confirmation(frame, app);
+    } else if app.live.question.is_some() {
+        questions(frame, app);
     } else if app.live.permission.is_some() {
         permission(frame, app);
     } else if app.connect.is_some() {
@@ -1373,6 +1379,359 @@ fn explorer(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+struct QuestionRow {
+    line: Line<'static>,
+    action: Option<crate::questions::Action>,
+    input: Option<crate::app::ComposerRow>,
+}
+
+fn question_rows(
+    rows: &mut Vec<QuestionRow>,
+    text: &str,
+    width: usize,
+    style: Style,
+    action: Option<crate::questions::Action>,
+) {
+    rows.extend(wrapped(text, width).into_iter().map(|text| QuestionRow {
+        line: Line::styled(text, style),
+        action,
+        input: None,
+    }));
+}
+
+fn questions(frame: &mut Frame, app: &mut App) {
+    use crate::questions::{Action, Page};
+    let Some(prompt) = &app.live.question else {
+        return;
+    };
+    let state = &prompt.state;
+    let area = frame.area();
+    let w = area.width.min(100);
+    let h = area.height.min(24);
+    let popup = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Agent questions ")
+        .style(Style::default().bg(app.theme.bg).fg(app.theme.fg));
+    let inner = block.inner(popup);
+    let body = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    let width = usize::from(body.width).max(1);
+    let selected = state.selected_action();
+    let normal = Style::default().fg(app.theme.fg);
+    let muted = Style::default().fg(app.theme.muted);
+    let highlight = normal.bg(app.theme.selection).add_modifier(Modifier::BOLD);
+    let mut rows = Vec::new();
+    question_rows(
+        &mut rows,
+        &format!("{} asks · answers go to {}", prompt.agent, prompt.model),
+        width,
+        muted,
+        None,
+    );
+    let mut cursor_row = None;
+    let mut cursor_column = 0;
+    match state.page {
+        Page::Question(index) => {
+            let question = &state.request.questions[index];
+            let header = if question.header.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", question.header)
+            };
+            question_rows(
+                &mut rows,
+                &format!("Question {} of {}{header}", index + 1, state.drafts.len()),
+                width,
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+                None,
+            );
+            question_rows(&mut rows, &question.question, width, normal, None);
+            question_rows(&mut rows, "", width, normal, None);
+            for (choice, option) in question.options.iter().enumerate() {
+                let action = Action::Pick(choice);
+                let mark = if state.drafts[index].choice == Some(choice) {
+                    "✓"
+                } else {
+                    " "
+                };
+                question_rows(
+                    &mut rows,
+                    &format!("{mark} {}. {}", choice + 1, option.label),
+                    width,
+                    if selected == action && !state.editing {
+                        highlight
+                    } else {
+                        normal
+                    },
+                    Some(action),
+                );
+                if !option.description.is_empty() {
+                    question_rows(
+                        &mut rows,
+                        &format!("   {}", option.description),
+                        width,
+                        muted,
+                        Some(action),
+                    );
+                }
+            }
+            let other = question.options.len();
+            let action = Action::Pick(other);
+            let mark = if state.drafts[index].choice == Some(other) {
+                "✓"
+            } else {
+                " "
+            };
+            question_rows(
+                &mut rows,
+                &format!("{mark} {}. Other… (write your own answer)", other + 1),
+                width,
+                if selected == action && !state.editing {
+                    highlight
+                } else {
+                    normal
+                },
+                Some(action),
+            );
+            let input = &state.drafts[index].input;
+            if state.drafts[index].choice == Some(other) || !input.text.is_empty() {
+                if state.drafts[index].choice != Some(other) {
+                    question_rows(
+                        &mut rows,
+                        "Retained custom draft (not selected)",
+                        width,
+                        muted,
+                        Some(Action::Input),
+                    );
+                }
+                let input_width = width.saturating_sub(2).max(1);
+                let input_rows = composer_rows(&input.text, input_width);
+                let current = input_rows
+                    .iter()
+                    .rposition(|row| row.start <= input.cursor)
+                    .unwrap_or(0);
+                for (row_index, row) in input_rows.into_iter().enumerate() {
+                    if row_index == current && state.editing {
+                        cursor_row = Some(rows.len());
+                        cursor_column =
+                            2 + composer_display_width(&input.text[row.start..input.cursor]);
+                    }
+                    let mut spans = vec![Span::styled("> ", Style::default().fg(app.theme.accent))];
+                    let mut column = 0;
+                    for (byte, grapheme) in input.text[row.start..row.end].grapheme_indices(true) {
+                        let absolute = row.start + byte;
+                        let selected_text = input
+                            .selection()
+                            .is_some_and(|range| range.contains(&absolute));
+                        let size = grapheme_width(grapheme, column);
+                        spans.push(Span::styled(
+                            if grapheme == "\t" {
+                                " ".repeat(size)
+                            } else {
+                                safe(grapheme)
+                            },
+                            if selected_text {
+                                normal.bg(app.theme.selection)
+                            } else {
+                                normal
+                            },
+                        ));
+                        column += size;
+                    }
+                    rows.push(QuestionRow {
+                        line: Line::from(spans),
+                        action: Some(Action::Input),
+                        input: Some(row),
+                    });
+                }
+            }
+            for (action, label) in [
+                (
+                    Action::Previous,
+                    if index == 0 {
+                        "Previous question (first question)"
+                    } else {
+                        "Previous question"
+                    },
+                ),
+                (
+                    Action::Next,
+                    if state.drafts.len() == 1 {
+                        "Submit answer"
+                    } else if index + 1 == state.drafts.len() {
+                        "Review answers"
+                    } else {
+                        "Next question"
+                    },
+                ),
+            ] {
+                question_rows(
+                    &mut rows,
+                    label,
+                    width,
+                    if selected == action && !state.editing {
+                        highlight
+                    } else {
+                        normal
+                    },
+                    Some(action),
+                );
+            }
+            question_rows(
+                &mut rows,
+                if state.editing {
+                    "Enter answers · Ctrl+J newline · Tab choices · Alt+←/→ previous/next"
+                } else {
+                    "↑/↓ select · Enter choose · 1–4 options · Alt+←/→ previous/next · Tab controls"
+                },
+                width,
+                muted,
+                None,
+            );
+        }
+        Page::Summary => {
+            question_rows(
+                &mut rows,
+                "Review answers",
+                width,
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+                None,
+            );
+            question_rows(
+                &mut rows,
+                "Select an answer to change it. Nothing is sent until confirmation.",
+                width,
+                muted,
+                None,
+            );
+            for (index, question) in state.request.questions.iter().enumerate() {
+                let action = Action::Edit(index);
+                let answer = state
+                    .answer(index)
+                    .map(|answer| answer.answer)
+                    .unwrap_or_else(|_| "Not answered".into());
+                question_rows(
+                    &mut rows,
+                    &format!("{}. {}\n   Answer: {answer}", index + 1, question.question),
+                    width,
+                    if selected == action {
+                        highlight
+                    } else {
+                        normal
+                    },
+                    Some(action),
+                );
+            }
+            for (action, label) in [
+                (Action::Confirm, "Confirm answers"),
+                (Action::Previous, "Back to questions"),
+            ] {
+                question_rows(
+                    &mut rows,
+                    label,
+                    width,
+                    if selected == action {
+                        highlight
+                    } else {
+                        normal
+                    },
+                    Some(action),
+                );
+            }
+            question_rows(
+                &mut rows,
+                "↑/↓ or Tab select · Enter edit/confirm · Alt+← back · PgUp/PgDn scroll",
+                width,
+                muted,
+                None,
+            );
+        }
+    }
+    if let Some(error) = &state.error {
+        question_rows(
+            &mut rows,
+            error,
+            width,
+            Style::default().fg(app.theme.red),
+            None,
+        );
+    }
+    let target = if state.error.is_some() {
+        rows.len().saturating_sub(1)
+    } else {
+        cursor_row
+            .or_else(|| rows.iter().position(|row| row.action == Some(selected)))
+            .unwrap_or(0)
+    };
+    let height = usize::from(body.height);
+    app.question_scroll = app.question_scroll.min(rows.len().saturating_sub(height));
+    if app.question_follow && height > 0 {
+        if target < app.question_scroll {
+            app.question_scroll = target;
+        }
+        if target >= app.question_scroll + height {
+            app.question_scroll = target + 1 - height;
+        }
+    }
+    for (index, row) in rows
+        .iter()
+        .enumerate()
+        .skip(app.question_scroll)
+        .take(height)
+    {
+        let y = body.y + (index - app.question_scroll) as u16;
+        let hit = Rect::new(body.x, y, body.width, 1);
+        if let Some(action) = row.action {
+            app.question_buttons.push((hit, action));
+        }
+        if let Some(input) = row.input
+            && body.width > 2
+        {
+            app.question_input_rows.push((
+                Rect::new(body.x.saturating_add(2), y, body.width.saturating_sub(2), 1),
+                input,
+            ));
+        }
+    }
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(
+        Paragraph::new(rows.into_iter().map(|row| row.line).collect::<Vec<_>>())
+            .scroll((app.question_scroll as u16, 0)),
+        body,
+    );
+    if inner.height > 0 {
+        frame.render_widget(
+            Paragraph::new("Enter selects/answers · Esc cancels").style(muted),
+            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        );
+    }
+    if body.width > 0
+        && height > 0
+        && target >= app.question_scroll
+        && target < app.question_scroll + height
+    {
+        frame.set_cursor_position((
+            body.x + cursor_column.min(usize::from(body.width - 1)) as u16,
+            body.y + (target - app.question_scroll) as u16,
+        ));
+    }
+}
+
 fn save_prompt(frame: &mut Frame, app: &App) {
     let Some(prompt) = &app.save_prompt else {
         return;
@@ -1463,7 +1822,7 @@ fn confirmation(frame: &mut Frame, app: &mut App) {
     );
     app.popup_choice_start = 0;
     let question = match app.pending.as_ref() {
-        Some(Pending::Quit) => "Leave Queditor? Unsaved or pending work will be affected.",
+        Some(Pending::Quit) => "Leave Qued? Unsaved or pending work will be affected.",
         Some(Pending::Open(_)) => {
             "Open another document? Unsaved or pending work will be affected."
         }
@@ -1664,7 +2023,7 @@ fn connect(frame: &mut Frame, app: &mut App) {
     }
     if matches!(wizard.step, ConnectStep::Credential) {
         let mut lines = vec![Line::styled(
-            "Where should Queditor obtain the credential?",
+            "Where should Qued obtain the credential?",
             Style::default()
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -2133,6 +2492,116 @@ fn wrapped(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn question_ui(count: usize) -> App {
+        let mut app = App::new(None).unwrap();
+        let (reply, _decision) = tokio::sync::oneshot::channel();
+        app.live.question = Some(crate::live::QuestionPrompt {
+            state: crate::questions::Questionnaire::new(crate::questions::tests::request(count))
+                .unwrap(),
+            agent: "Planner".into(),
+            model: "fixture::model".into(),
+            reply,
+        });
+        app
+    }
+
+    #[test]
+    fn question_popup_wraps_text_and_keeps_input_cursor_and_hitboxes_in_bounds() {
+        use crate::questions::Action;
+        use ratatui::{Terminal, backend::TestBackend};
+        for (width, height) in [(140, 40), (80, 24), (30, 10), (20, 5)] {
+            let mut app = question_ui(2);
+            let state = &mut app.live.question.as_mut().unwrap().state;
+            state.request.questions[0].question =
+                "A long question with words and 界e\u{301}👩‍💻? ".repeat(8);
+            state.act(Action::Pick(2));
+            state.insert("Custom 界e\u{301}👩‍💻 answer\nwith another line");
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            for area in app
+                .question_buttons
+                .iter()
+                .map(|(area, _)| area)
+                .chain(app.question_input_rows.iter().map(|(area, _)| area))
+            {
+                assert!(area.right() <= width && area.bottom() <= height);
+            }
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(cursor.x < width && cursor.y < height);
+            assert!(app.document.text.is_empty());
+        }
+    }
+
+    #[test]
+    fn question_summary_rows_are_clickable_and_custom_text_has_source_positions() {
+        use crate::questions::{Action, Page};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = question_ui(2);
+        app.live
+            .question
+            .as_mut()
+            .unwrap()
+            .state
+            .act(Action::Pick(0));
+        app.live
+            .question
+            .as_mut()
+            .unwrap()
+            .state
+            .act(Action::Pick(1));
+        app.live.question.as_mut().unwrap().state.selected = 0;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let (area, _) = app
+            .question_buttons
+            .iter()
+            .find(|(_, action)| *action == Action::Edit(0))
+            .copied()
+            .unwrap();
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.live.question.as_ref().unwrap().state.page,
+            Page::Question(0)
+        );
+        app.live
+            .question
+            .as_mut()
+            .unwrap()
+            .state
+            .act(Action::Pick(2));
+        app.live
+            .question
+            .as_mut()
+            .unwrap()
+            .state
+            .insert("界👩‍💻 custom");
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let (area, row) = app.question_input_rows[0];
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.live
+                .question
+                .as_ref()
+                .unwrap()
+                .state
+                .input()
+                .unwrap()
+                .cursor,
+            row.start
+        );
+        assert!(app.document.text.is_empty());
+    }
     use ratatui::{Terminal, backend::TestBackend};
 
     fn review_fixture(before: &str, after: &str) -> (tempfile::TempDir, App) {

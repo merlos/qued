@@ -9,12 +9,12 @@ export default defineConfig({
   base,
   integrations: [
     starlight({
-      title: 'Queditor',
+      title: 'Qued',
       description: 'A terminal editor where every AI edit waits for your review.',
       logo: { src: './src/assets/logo.svg' },
       favicon: '/favicon.svg',
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/merlos/queditor' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/merlos/qued' },
       ],
       customCss: ['./src/styles/starlight.css'],
       sidebar: [

@@ -1,6 +1,6 @@
-# Releasing Queditor
+# Releasing Qued
 
-Queditor publishes unsigned standalone archives through `.github/workflows/release.yml`.
+Qued publishes unsigned standalone archives through `.github/workflows/release.yml`.
 
 ## Release targets
 
@@ -10,7 +10,7 @@ Queditor publishes unsigned standalone archives through `.github/workflows/relea
 - `aarch64-apple-darwin`: Apple Silicon macOS tarball.
 
 Each native GitHub-hosted runner executes Rust tests, builds with `--release
---locked`, runs `queditor --version` and `queditor --check`, and packages the
+--locked`, runs `qued --version` and `qued --check`, and packages the
 binary with the license and user documentation. Linux additionally rejects a
 binary with unexpected shared-library dependencies.
 
@@ -28,7 +28,7 @@ It does not create a GitHub Release.
 4. Create and push a matching tag, for example:
 
    ```sh
-   git tag -a v0.2.0 -m "Queditor v0.2.0"
+   git tag -a v0.2.0 -m "Qued v0.2.0"
    git push origin v0.2.0
    ```
 

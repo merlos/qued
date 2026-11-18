@@ -2,7 +2,7 @@
 
 ## Editor and focus
 
-Start with `queditor [file]`. Type in the editor. Tab switches editor/chat focus.
+Start with `qued [file]`. Type in the editor. Tab switches editor/chat focus.
 Arrows move; Shift+arrows select. Ctrl+Left/Right moves by word. Home/End moves to
 line boundaries, Ctrl+Home/End to document boundaries, and PageUp/Down by ten lines.
 Ctrl+A/E moves to the beginning/end of the current line. Ctrl+K deletes from the
@@ -130,8 +130,8 @@ runs the highlighted command, and Tab completes without submitting so you can ad
 arguments. For example, `/co` then Enter opens `/connect` immediately.
 Slash commands are not echoed as `You:` messages in either mode; command output
 and errors remain visible, and successful commands can still be recalled with Up.
-`/help` lists commands; `/version` displays the running Queditor version (for example,
-`queditor 0.2.0`), the same package version reported by `queditor --version`.
+`/help` lists commands; `/version` displays the running Qued version (for example,
+`qued 0.2.0`), the same package version reported by `qued --version`.
 Command errors appear in red directly above the prompt hints; failed input stays
 in the prompt for correction. Long errors wrap across up to three lines.
 Long prompt lines wrap within the composer. Up on the prompt's first visual line
@@ -163,6 +163,13 @@ and mode selections.
 `/agents` then Enter opens an agent picker with names and descriptions. Use Up/Down
 and Enter, or click a row, to select and remember an agent. Escape closes without
 changing the agent. `/agents <name>` selects directly without opening the popup.
+
+Live agents can open a question popup with up to three suggested answers plus Other
+for custom text. Use Alt+Left/Right or Previous/Next to revisit answers. Batches end
+with an editable summary and explicit Confirm answers; single answers submit directly.
+Escape cancels the agent turn. While answering, Tab/Shift+Tab navigate the popup,
+not panes or agents. See [agent questions](live-ai.md#agent-questions) for controls
+and what is sent to the provider.
 
 Select editor text and switch to chat. `Selected line X` or `Selected lines X:Y`
 appears above the prompt, and the current selection is automatically snapshotted and sent as important
@@ -197,7 +204,7 @@ These modified keys require terminal enhanced-keyboard support; `/changes keep` 
 reject-all` resolve the complete proposal. Ordinary typing, Enter, and Escape never
 accept changes. Acceptance is not a save and can be undone.
 
-If you edit the document while changes are pending, Queditor preserves your edit and
+If you edit the document while changes are pending, Qued preserves your edit and
 closes the now-stale review layer rather than overwriting your work. Saving while a
 proposal exists saves only the unchanged accepted document.
 
@@ -267,7 +274,7 @@ No agent shell execution, writes, or deletion are available.
 
 ## Troubleshooting
 
-- Use `queditor --check` to see startup settings and configuration warnings.
+- Use `qued --check` to see startup settings and configuration warnings.
 - If Shift+Enter submits instead of inserting a newline, use Ctrl+J.
 - If a terminal reserves a shortcut, use commands or an alternate profile binding.
 - Terminal raw mode, mouse capture, and alternate-screen state are restored on

@@ -1,9 +1,14 @@
 # Configuration
 
-On Linux/macOS, the app reads `$XDG_CONFIG_HOME/queditor/config.yaml`, or
-`~/.config/queditor/config.yaml` when XDG_CONFIG_HOME is unset. On Windows it reads
-`%APPDATA%\queditor\config.yaml`. It does not create
+On Linux/macOS, the app reads `$XDG_CONFIG_HOME/qued/config.yaml`, or
+`~/.config/qued/config.yaml` when XDG_CONFIG_HOME is unset. On Windows it reads
+`%APPDATA%\qued\config.yaml`. It does not create
 or modify home-directory configuration automatically.
+
+Only the `qued` directory is used. When upgrading from an earlier application
+name, manually move your configuration directory to this location to retain
+settings, custom agents, and private credentials. Existing directories are not
+migrated or deleted automatically; preserve private file permissions.
 
 ```yaml
 schema_version: 1
@@ -60,9 +65,9 @@ current value when a request starts, so key rotation does not require a config e
 
 Never place a raw key in `config.yaml`. File references point to an entry in
 `credentials.yaml` in the same configuration directory. That fallback is unencrypted plaintext, created
-atomically with mode 0600 on Unix; Queditor rejects a permissive or symlinked file.
+atomically with mode 0600 on Unix; Qued rejects a permissive or symlinked file.
 Use `/connect delete <provider-id>` to remove a provider and its file secret.
-Environment variables are never modified by Queditor.
+Environment variables are never modified by Qued.
 
 ## Editing bindings
 
@@ -109,7 +114,7 @@ built-in prompts must be nonempty.
 
 The build automatically embeds all `.md` files in filename order, which is also
 picker/rotation order. Numbered filenames keep the order explicit. Edit a file or
-add another (for example, `03-reviewer.md`) and rebuild Queditor—no Rust registry
+add another (for example, `03-reviewer.md`) and rebuild Qued—no Rust registry
 changes are needed. Installed binaries need no external copy of the files. This
 does not modify your home-directory configuration.
 

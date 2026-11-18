@@ -2,7 +2,7 @@
 
 ## Product and current scope
 
-Queditor is a Rust terminal Markdown/text editor. Read `MASTER.md` for actual
+Qued is a Rust terminal Markdown/text editor. Read `MASTER.md` for actual
 feature status, `Masterplan.md` for the delivery roadmap, and `README.md` for
 usage. The default assistant is mock; live mode uses the `genai` multi-provider
 library. Never imply mock responses are live AI or every provider is account-tested.
@@ -21,6 +21,7 @@ library. Never imply mock responses are live AI or every provider is account-tes
 - `src/review.rs`: already-applied edit ranges, manual-edit rebasing, protected Keep/Undo state.
 - `src/tools.rs`: exact-path/URL grants, sensitive exclusions, anchored file and prepared web capabilities.
 - `src/web.rs`: permission-gated public HTTP(S) GETs, pinned/validated DNS, bounded UTF-8 responses and sanitized errors.
+- `src/questions.rs`: validated question batches, local answer drafts, navigation and explicit batch confirmation; reuses Document editing without filesystem operations.
 - `src/storage.rs`: private versioned recovery/session/permission records and recovery-picker metadata.
 - `src/ui.rs`: rendering and layout; do not perform filesystem/network I/O here.
 - `src/lib.rs`: reusable modules for tests and future clients.
@@ -56,6 +57,7 @@ they acquire real complexity; do not create empty placeholder hierarchies.
 - Chat mode is read-only. Agent mode may target the complete open document snapshot;
   current selections and pinned snapshots are important context, not edit boundaries.
 - Cancellation must discard generated proposals and prevent late events mutating a new session/document.
+- Question drafts stay local/in-memory until submission; batches require explicit summary confirmation. Confirmed answers are context, never file/network permission. Cancellation/timeout must close the questionnaire and discard unfinished drafts.
 - Keep/Undo uses dedicated modified shortcuts. Typing edits the live document;
   deleted diff rows and headers are never editable document positions.
 - Compaction must reject tool calls, even if a provider returns them without declared tools.

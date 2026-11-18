@@ -202,7 +202,7 @@ pub fn state_dir() -> PathBuf {
                     .map(|home| home.join("AppData/Local"))
             })
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("queditor");
+            .join("qued");
     }
     #[cfg(all(not(windows), not(test)))]
     std::env::var_os("XDG_STATE_HOME")
@@ -213,7 +213,7 @@ pub fn state_dir() -> PathBuf {
                 .unwrap_or_default()
                 .join(".local/state")
         })
-        .join("queditor")
+        .join("qued")
 }
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;

@@ -1,9 +1,9 @@
-# Queditor
+# Qued
 
 A Rust terminal Markdown/text editor with a side-by-side or stacked chat pane
 and VS Code-style inline Keep/Undo review of assistant edits.
 
-**Website and documentation:** <https://merlos.github.io/queditor/>
+**Website and documentation:** <https://merlos.github.io/qued/>
 
 **Early prototype:** offline mock mode is the default. Live AI uses
 [`genai`](https://github.com/jeremychone/rust-genai), a multi-provider Rust library
@@ -17,7 +17,7 @@ before review.** Keep confirms them; Undo reverts and saves them. Chat mode is r
 ### Download a binary
 
 Unsigned binaries are published on the repository's
-[GitHub Releases](https://github.com/merlos/queditor/releases) page for:
+[GitHub Releases](https://github.com/merlos/qued/releases) page for:
 
 - Windows x86-64 (`.zip`)
 - Linux x86-64, statically linked (`.tar.gz`)
@@ -25,8 +25,8 @@ Unsigned binaries are published on the repository's
 - macOS Apple Silicon arm64 (`.tar.gz`)
 
 Download the archive for your platform, verify it against `SHA256SUMS` (or its
-adjacent `.sha256` file), extract it, and run `queditor` from a terminal. On
-Windows, run `queditor.exe` from PowerShell or Command Prompt. The first unsigned
+adjacent `.sha256` file), extract it, and run `qued` from a terminal. On
+Windows, run `qued.exe` from PowerShell or Command Prompt. The first unsigned
 release may trigger Windows SmartScreen or macOS Gatekeeper; inspect the checksum
 and release source before choosing to run it. Code signing and notarization are
 planned, not currently provided.
@@ -48,11 +48,11 @@ document if its parent directory exists. To install the binary:
 
 ```sh
 cargo install --path .
-queditor document.md
+qued document.md
 ```
 
 An interactive terminal is required. `cargo run -- --check` checks startup without
-entering the UI. `queditor --help` shows CLI options.
+entering the UI. `qued --help` shows CLI options.
 
 ## Quick start
 
@@ -89,7 +89,7 @@ entering the UI. `queditor --help` shows CLI options.
 - `/rewrite "replacement text"` previews a replacement for selection/context,
   or the whole document when neither is present.
 - `/help` lists commands; `/keys` shows the current editing bindings;
-  `/version` displays the running Queditor version.
+  `/version` displays the running Qued version.
 
 ## Current features
 
@@ -117,14 +117,16 @@ entering the UI. `queditor --help` shows CLI options.
 - Live streaming, cancellation, model switching, and conversation compaction.
 - Read/list tools with once/session/exact-path persistent permission choices.
 - Permission-gated `webfetch` for public HTTP(S) text/HTML, with exact-URL grants.
+- Agent question popups with suggested/custom answers, back/next navigation, and
+  editable batch summaries that require confirmation before sending.
 - Private recovery checkpoints with a keyboard/mouse restore picker and opt-in saved sessions.
 
 ## Enable live AI
 
 Run `/connect`, choose OpenAI, Anthropic, Gemini, OpenRouter, or a custom
-OpenAI-compatible endpoint, and choose where Queditor should resolve the API key.
+OpenAI-compatible endpoint, and choose where Qued should resolve the API key.
 Keys can remain in an environment variable or—with an explicit plaintext warning—be
-saved in private `credentials.yaml`. Queditor then
+saved in private `credentials.yaml`. Qued then
 discovers account models where the provider supports it and opens `/models`.
 
 You can still select or enter a model directly, for example
@@ -134,7 +136,7 @@ Use a model available to your account; tool/stream support varies by model.
 
 Chat mode answers without changing files. In Agent mode the model may return a
 complete replacement for the open document; selections remain important
-context rather than edit boundaries. On successful completion, Queditor validates
+context rather than edit boundaries. On successful completion, Qued validates
 the snapshot, applies one undoable edit, and saves the **whole file, including any
 existing unsaved text**. External disk changes or save failures prevent application.
 The editable unified diff shows red removals, green additions, line numbers, and
@@ -160,7 +162,7 @@ endpoints, permissions, sessions, and recovery details.
 
 ## Important limitations
 
-- Copy/cut shortcuts use **Queditor's internal clipboard**, not the OS clipboard.
+- Copy/cut shortcuts use **Qued's internal clipboard**, not the OS clipboard.
   Your terminal's paste action is supported and never submits pasted newlines.
 - One document and one proposal at a time; manual edits safely close stale review.
 - Recovery checkpoints

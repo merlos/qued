@@ -8,27 +8,27 @@ const url = (path: string) => `${base}${path.replace(/^\//, '')}`;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
-    <meta name="description" content="Queditor is a terminal editor with automatically saved AI edits and inline Keep/Undo review." />
+    <meta name="description" content="Qued is a terminal editor with automatically saved AI edits and inline Keep/Undo review." />
     <meta name="theme-color" content="#0a0c09" />
-    <meta property="og:title" content="Queditor — AI edits, on your terms" />
+    <meta property="og:title" content="Qued — AI edits, on your terms" />
     <meta property="og:description" content="A terminal editor with automatically saved AI edits and inline Keep/Undo review." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content={new URL(base, Astro.site)} />
     <meta name="twitter:card" content="summary" />
     <link rel="canonical" href={new URL(base, Astro.site)} />
     <link rel="icon" href={url('favicon.svg')} />
-    <title>Queditor — AI edits, on your terms</title>
+    <title>Qued — AI edits, on your terms</title>
   </head>
   <body>
     <header class="nav wrap">
-      <a class="brand" href={base} aria-label="Queditor home">
+      <a class="brand" href={base} aria-label="Qued home">
         <img src={url('favicon.svg')} alt="" />
-        <span>queditor</span>
+        <span>qued</span>
       </a>
       <nav aria-label="Main navigation">
         <a href={url('docs/')}>Docs</a>
-        <a href="https://github.com/merlos/queditor/releases">Downloads</a>
-        <a class="github" href="https://github.com/merlos/queditor">GitHub ↗</a>
+        <a href="https://github.com/merlos/qued/releases">Downloads</a>
+        <a class="github" href="https://github.com/merlos/qued">GitHub ↗</a>
       </nav>
     </header>
 
@@ -39,14 +39,14 @@ const url = (path: string) => `${base}${path.replace(/^\//, '')}`;
           <h1>AI edits,<br /><em>on your terms.</em></h1>
           <p class="lede">Write Markdown and text at terminal speed. Live Agent edits apply and save automatically. Review them inline, keep what works, and undo what doesn't.</p>
           <div class="actions">
-            <a class="primary" href="https://github.com/merlos/queditor/releases">Download Queditor <span>↓</span></a>
+            <a class="primary" href="https://github.com/merlos/qued/releases">Download Qued <span>↓</span></a>
             <a class="secondary" href={url('docs/')}>Read the docs →</a>
           </div>
           <p class="fine">Open source · Rust · Windows, Linux & macOS · Unsigned early release</p>
         </div>
 
-        <div class="terminal-shell" aria-label="Illustration of Queditor reviewing an assistant edit">
-          <div class="terminal-top"><i></i><i></i><i></i><span>draft.md — queditor</span></div>
+        <div class="terminal-shell" aria-label="Illustration of Qued reviewing an assistant edit">
+          <div class="terminal-top"><i></i><i></i><i></i><span>draft.md — qued</span></div>
           <div class="terminal">
             <div class="editor-pane">
               <div class="pane-label">EDITOR <b>draft.md</b></div>
@@ -96,12 +96,12 @@ const url = (path: string) => `${base}${path.replace(/^\//, '')}`;
       <section class="cta wrap">
         <p class="section-kicker">EARLY PROTOTYPE</p>
         <h2>Keep the speed.<br />Keep the final say.</h2>
-        <p>Try Queditor today, or explore the documentation to understand its privacy and safety model.</p>
-        <div class="actions"><a class="primary" href="https://github.com/merlos/queditor/releases">Get the latest release</a><a class="secondary" href={url('docs/live-ai/')}>Privacy & permissions →</a></div>
+        <p>Try Qued today, or explore the documentation to understand its privacy and safety model.</p>
+        <div class="actions"><a class="primary" href="https://github.com/merlos/qued/releases">Get the latest release</a><a class="secondary" href={url('docs/live-ai/')}>Privacy & permissions →</a></div>
       </section>
     </main>
 
-    <footer class="wrap"><span>Queditor · MIT licensed</span><span>Built in Rust for the terminal.</span></footer>
+    <footer class="wrap"><span>Qued · MIT licensed</span><span>Built in Rust for the terminal.</span></footer>
   </body>
 </html>
 

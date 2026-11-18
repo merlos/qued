@@ -243,7 +243,7 @@ pub fn config_dir() -> PathBuf {
                     .map(|home| home.join("AppData/Roaming"))
             })
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("queditor");
+            .join("qued");
     }
     #[cfg(all(not(windows), not(test)))]
     std::env::var_os("XDG_CONFIG_HOME")
@@ -254,7 +254,7 @@ pub fn config_dir() -> PathBuf {
                 .unwrap_or_default()
                 .join(".config")
         })
-        .join("queditor")
+        .join("qued")
 }
 
 #[cfg(test)]

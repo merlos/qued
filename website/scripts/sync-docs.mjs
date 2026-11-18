@@ -7,10 +7,10 @@ const repository = resolve(website, '..');
 const destination = join(website, 'src', 'content', 'docs', 'docs');
 
 const documents = [
-  ['user-guide.md', 'User guide', 'Learn Queditor’s editing, file, chat, and review workflows.'],
+  ['user-guide.md', 'User guide', 'Learn Qued’s editing, file, chat, and review workflows.'],
   ['configuration.md', 'Configuration', 'Configure themes, keybindings, models, and custom agents.'],
   ['live-ai.md', 'Live AI, privacy, permissions, and recovery', 'Connect providers while keeping context sharing and file access explicit.'],
-  ['releasing.md', 'Releasing Queditor', 'Build and publish Queditor’s unsigned release archives.'],
+  ['releasing.md', 'Releasing Qued', 'Build and publish Qued’s unsigned release archives.'],
 ];
 
 await mkdir(destination, { recursive: true });

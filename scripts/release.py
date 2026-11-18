@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate, package, and checksum Queditor release binaries."""
+"""Validate, package, and checksum Qued release binaries."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def package(target: str, archive: str, version: str, output: Path) -> Path:
     if any(part in target for part in ("/", "\\", "..")):
         raise SystemExit("invalid target triple")
 
-    executable = "queditor.exe" if "windows" in target else "queditor"
+    executable = "qued.exe" if "windows" in target else "qued"
     binary = ROOT / "target" / target / "release" / executable
     if not binary.is_file():
         raise SystemExit(f"release binary not found: {binary}")
@@ -51,7 +51,7 @@ def package(target: str, archive: str, version: str, output: Path) -> Path:
             raise SystemExit(f"package file not found: {relative}")
 
     output.mkdir(parents=True, exist_ok=True)
-    stem = f"queditor-v{version}-{target}"
+    stem = f"qued-v{version}-{target}"
     files = ((binary, Path(stem) / executable),) + tuple(
         (ROOT / relative, Path(stem) / relative) for relative in PACKAGE_FILES
     )

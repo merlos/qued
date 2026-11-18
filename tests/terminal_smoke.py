@@ -19,7 +19,7 @@ import re
 import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "target" / "debug" / "queditor"
+BINARY = ROOT / "target" / "debug" / "qued"
 
 
 class TerminalApp:
@@ -131,7 +131,7 @@ class TerminalApp:
 
 class SmokeTests(unittest.TestCase):
     def test_pristine_startup_focuses_planner_in_agent_mode(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-pristine-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-pristine-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
@@ -144,18 +144,18 @@ class SmokeTests(unittest.TestCase):
             app.finish()
 
     def test_prompt_selection_shares_clipboard_with_editor_without_submitting_paste(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-prompt-clipboard-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-prompt-clipboard-") as directory:
             doc, app = self.launch(directory)
             app.send(b"\tfirst\x0asecond", b"second")
             # Enhanced Ctrl+Shift+A selects the entire multiline prompt.
-            app.send(b"\x1b[97;6u\x03", b"Copied to Queditor's internal clipboard")
+            app.send(b"\x1b[97;6u\x03", b"Copied to Qued's internal clipboard")
             app.send(b"\x18\x16\t\x16\x13", b"Saved")
             app.send(b"\x11")
             app.finish()
             self.assertEqual(doc.read_text(), "first\nsecond")
 
     def test_agent_reply_mouse_selection_copies_into_editor(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-reply-clipboard-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-reply-clipboard-") as directory:
             doc, app = self.launch(directory)
             app.send(b"\thello\r", b"Mock mode is selected.")
             body = next((row, "".join(line).index("Planner is selected."))
@@ -164,14 +164,14 @@ class SmokeTests(unittest.TestCase):
             row, column = body
             # SGR mouse coordinates are one-based; drag over the first word.
             app.send(f"\x1b[<0;{column + 1};{row + 1}M\x1b[<32;{column + 8};{row + 1}M\x1b[<0;{column + 8};{row + 1}m".encode())
-            app.send(b"\x03", b"Copied to Queditor's internal clipboard")
+            app.send(b"\x03", b"Copied to Qued's internal clipboard")
             app.send(b"\t\x16\x13", b"Saved")
             app.send(b"\x11")
             app.finish()
             self.assertEqual(doc.read_text(), "Planner")
 
     def test_shift_tab_rotates_agent_mode_pairs_and_restores_saved_pair(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-rotation-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-rotation-") as directory:
             root = Path(directory)
             doc, app = self.launch(directory)
             app.send(b"\t/agents Blogger\r", b"Agent selected and remembered: Blogger")
@@ -184,7 +184,7 @@ class SmokeTests(unittest.TestCase):
             app.send(b"\x1b[Z", b"Blogger Chat")
             # The shortcut also rotates from the editor without moving focus or typing.
             app.send(b"\t\x1b[Z", b"Blogger Agent")
-            saved = (root / "config/queditor/config.yaml").read_text()
+            saved = (root / "config/qued/config.yaml").read_text()
             self.assertIn("agent: Blogger", saved)
             self.assertIn("Blogger: agent", saved)
             app.send(b"\x11")
@@ -197,9 +197,9 @@ class SmokeTests(unittest.TestCase):
             restarted.finish()
 
     def test_shift_tab_custom_agents_join_rotation_and_failed_save_keeps_pair(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-custom-rotation-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-custom-rotation-") as directory:
             root = Path(directory)
-            config = root / "config/queditor"
+            config = root / "config/qued"
             (config / "agents").mkdir(parents=True)
             (config / "agents/reviewer.md").write_text("---\nname: Smoke Reviewer\n---\nReview clearly.\n")
             doc, app = self.launch(directory)
@@ -225,11 +225,11 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(doc.read_text(), "")
 
     def test_agent_picker_and_prompt_control_line_keys(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-picker-prompt-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-picker-prompt-") as directory:
             doc, app = self.launch(directory)
             app.send(b"\t/agents\r", b"Which agent do you want to use?")
             app.send(b"\x1b[B\r", b"Agent selected and remembered: Blogger")
-            saved = (Path(directory) / "config/queditor/config.yaml").read_text()
+            saved = (Path(directory) / "config/qued/config.yaml").read_text()
             self.assertIn("agent: Blogger", saved)
             app.send(b"first\x0asecond\x01\x0bkept\x05!\r", b"Mock mode is selected.")
             visible = "\n".join("".join(row) for row in app.screen)
@@ -249,7 +249,7 @@ class SmokeTests(unittest.TestCase):
 
     def test_unnamed_save_popup_from_completion_and_control_s(self):
         for trigger in (b"\t/sa\r", b"\x13"):
-            with self.subTest(trigger=trigger), tempfile.TemporaryDirectory(prefix="queditor-save-prompt-") as directory:
+            with self.subTest(trigger=trigger), tempfile.TemporaryDirectory(prefix="qued-save-prompt-") as directory:
                 root = Path(directory)
                 destination = root / "draft 界 name.md"
                 app = TerminalApp(None, root / "config")
@@ -263,7 +263,7 @@ class SmokeTests(unittest.TestCase):
                 app.finish()
 
     def test_type_save_exit_restores_terminal(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-smoke-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-smoke-") as directory:
             doc, app = self.launch(directory)
             app.send(b"hello\rworld\x13", b"Saved")
             app.send(b"\x11")
@@ -271,7 +271,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(doc.read_text(), "hello\nworld")
 
     def test_mock_review_accept_undo_and_save(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-smoke-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-smoke-") as directory:
             doc, app = self.launch(directory, width=80)
             app.send(b"hello\t/demo\r", b"MOCK PREVIEW: Change 1 of 1")
             app.send(b"\x1b[13;5u", b"Proposal accepted")
@@ -283,7 +283,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(doc.read_text(), "hello")
 
     def test_dirty_quit_cancel_and_discard(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-smoke-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-smoke-") as directory:
             doc, app = self.launch(directory)
             app.send(b"unsaved\x11", b"Confirm")
             app.send(b"c")
@@ -293,7 +293,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(doc.read_text(), "")
 
     def test_selected_agent_and_model_are_restored_after_restart(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-preferences-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-preferences-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
@@ -308,7 +308,7 @@ class SmokeTests(unittest.TestCase):
             self.assertNotIn("draft.md", "".join(app.screen[0]))
             self.assertEqual("".join(app.screen[-2]).strip(), "draft.md · 1:1 · 0 words · 0 chars · 0 b · Tokens in 0 out 0")
             app.send(b"/models ollama::remembered\r", b"Model selected and remembered")
-            saved = (config / "queditor/config.yaml").read_text()
+            saved = (config / "qued/config.yaml").read_text()
             self.assertIn("agent: Blogger", saved)
             self.assertIn("Blogger: agent", saved)
             self.assertIn("model: ollama::remembered", saved)
@@ -331,11 +331,12 @@ class SmokeTests(unittest.TestCase):
 class FakeProvider:
     """Exercises genai's real HTTP/SSE adapter against a local fixture server."""
 
-    def __init__(self, read_path, deny=False, operation="read_file"):
+    def __init__(self, read_path, deny=False, operation="read_file", questions=None):
         self.requests = []
         self.read_path = str(read_path)
         self.deny = deny
         self.operation = operation
+        self.questions = questions
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -359,6 +360,8 @@ class FakeProvider:
                 if turn == 1 or (turn == 2 and not owner.deny):
                     name = owner.operation if turn == 1 else "propose_edit"
                     arguments = {"url" if owner.operation == "webfetch" else "path": owner.read_path} if turn == 1 else {"replacement": "HELLO"}
+                    if turn == 1 and owner.operation == "question":
+                        arguments = {"questions": owner.questions}
                     chunk({"role": "assistant", "tool_calls": [{"index": 0, "id": f"call-{turn}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]})
                     chunk({}, "tool_calls")
                 else:
@@ -393,9 +396,101 @@ class FakeProvider:
 
 
 class LiveSmokeTests(unittest.TestCase):
+    def launch_question_fixture(self, directory, questions, mode="chat", edit=False, persist=False):
+        root = Path(directory)
+        doc = root / "draft.md"
+        doc.write_text("original document")
+        config = root / "config"
+        (config / "qued").mkdir(parents=True)
+        (config / "qued/config.yaml").write_text(
+            f"model: genai_1::test\nagent_modes:\n  Planner: {mode}\npersist_sessions: {str(persist).lower()}\n"
+        )
+        provider = FakeProvider(root / "unused", deny=not edit, operation="question", questions=questions)
+        self.addCleanup(provider.close)
+        app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test", start_in_editor=False)
+        self.addCleanup(app.close)
+        return root, doc, provider, app
+
+    def test_question_batch_custom_answer_back_navigation_and_confirmation(self):
+        questions = [
+            {"question": "Which tone?", "header": "Tone", "options": [{"label": "Formal"}, {"label": "Friendly"}, {"label": "Concise"}]},
+            {"question": "Who is the audience?", "header": "Audience", "options": [{"label": "Beginners"}, {"label": "Experts"}]},
+        ]
+        with tempfile.TemporaryDirectory(prefix="qued-question-batch-") as directory:
+            _root, doc, provider, app = self.launch_question_fixture(directory, questions)
+            app.send(b"Ask before writing.\r", b"Question 1 of 2")
+            self.assertIn("question", [tool["function"]["name"] for tool in provider.requests[0]["tools"]])
+            app.send(b"1", b"Question 2 of 2")
+            app.send(b"3")
+            answer = "界 writers\nwith examples"
+            app.send(b"\x1b[200~" + answer.encode() + b"\x1b[201~", b"with examples")
+            app.send(b"\r", b"Nothing is sent until confirmation.")
+            self.assertEqual(len(provider.requests), 1)
+            self.assertEqual(doc.read_text(), "original document")
+            # Confirm is initially highlighted. Go back to the first answer and revise it.
+            app.send(b"\x1b[A\x1b[A\r", b"Question 1 of 2")
+            app.send(b"2", b"Question 2 of 2")
+            app.send(b"\r", b"Nothing is sent until confirmation.")
+            self.assertEqual(len(provider.requests), 1)
+            app.send(b"\r", b"Agent finished")
+            result = json.loads(provider.requests[1]["messages"][-1]["content"])["result"]["answers"]
+            self.assertEqual(result[0]["answer"], "Friendly")
+            self.assertEqual(result[0]["option_index"], 1)
+            self.assertEqual(result[1]["answer"], answer)
+            self.assertNotIn("option_index", result[1])
+            self.assertEqual(doc.read_text(), "original document")
+            app.send(b"\x11")
+            app.finish()
+
+    def test_single_open_question_submits_custom_answer_then_agent_can_edit(self):
+        with tempfile.TemporaryDirectory(prefix="qued-question-single-") as directory:
+            _root, doc, provider, app = self.launch_question_fixture(
+                directory, [{"question": "What should the draft say?", "options": []}], mode="agent", edit=True
+            )
+            app.send(b"Ask me, then revise the document.\r", b"Question 1 of 1")
+            app.send(b"1")
+            app.send(b"\x1b[200~Hello writers\x1b[201~", b"Hello writers")
+            app.send(b"\r", b"SAVED")
+            result = json.loads(provider.requests[1]["messages"][-1]["content"])["result"]["answers"]
+            self.assertEqual(result[0]["answer"], "Hello writers")
+            self.assertEqual(doc.read_text(), "HELLO")
+            app.send(b"/changes keep-all\r", b"Changes kept")
+            app.send(b"\x11")
+            app.finish()
+
+    def test_question_cancellation_never_sends_or_persists_unconfirmed_drafts(self):
+        questions = [
+            {"question": "First question?", "options": [{"label": "Suggested"}]},
+            {"question": "Second question?", "options": [{"label": "Suggested"}]},
+        ]
+        with tempfile.TemporaryDirectory(prefix="qued-question-cancel-") as directory:
+            root, doc, provider, app = self.launch_question_fixture(directory, questions, persist=True)
+            app.send(b"Ask questions first.\r", b"Question 1 of 2")
+            app.send(b"2")
+            app.send(b"\x1b[200~UNCONFIRMED_PRIVATE_DRAFT\x1b[201~", b"UNCONFIRMED_PRIVATE_DRAFT")
+            app.send(b"\x1b", b"Cancelled")
+            app.send(b"\x11")
+            app.finish()
+            self.assertEqual(len(provider.requests), 1)
+            self.assertEqual(doc.read_text(), "original document")
+            for path in (root / "state").rglob("*.json"):
+                self.assertNotIn("UNCONFIRMED_PRIVATE_DRAFT", path.read_text())
+
+    def test_invalid_question_options_return_an_error_without_opening_the_dialog(self):
+        questions = [{"question": "Too many?", "options": [{"label": str(index)} for index in range(4)]}]
+        with tempfile.TemporaryDirectory(prefix="qued-question-invalid-") as directory:
+            _root, doc, provider, app = self.launch_question_fixture(directory, questions)
+            app.send(b"Ask a question.\r", b"Agent finished")
+            self.assertNotIn(b"Agent questions", app.output)
+            error = json.loads(provider.requests[1]["messages"][-1]["content"])["error"]
+            self.assertIn("at most 3", error)
+            self.assertEqual(doc.read_text(), "original document")
+            app.send(b"\x11")
+            app.finish()
+
     def test_blogger_system_guidance_reaches_provider_with_chat_and_agent_contracts(self):
         for mode in ("chat", "agent"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="queditor-blogger-prompt-") as directory:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="qued-blogger-prompt-") as directory:
                 root = Path(directory)
                 doc = root / "post.md"
                 original = "---\ntitle: Existing draft\ndraft: true\ncustom: keep\n---\n\nOriginal article.\n"
@@ -403,8 +498,8 @@ class LiveSmokeTests(unittest.TestCase):
                 note = root / "note.md"
                 note.write_text("NOT_APPROVED")
                 config = root / "config"
-                (config / "queditor").mkdir(parents=True)
-                (config / "queditor/config.yaml").write_text("model: genai_1::test\n")
+                (config / "qued").mkdir(parents=True)
+                (config / "qued/config.yaml").write_text("model: genai_1::test\n")
                 provider = FakeProvider(note, deny=True)
                 self.addCleanup(provider.close)
                 app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test", start_in_editor=False)
@@ -418,7 +513,7 @@ class LiveSmokeTests(unittest.TestCase):
                     self.assertIn(rule, system)
                 names = [tool["function"]["name"] for tool in provider.requests[0]["tools"]]
                 self.assertEqual("propose_edit" in names, mode == "agent")
-                self.assertIn("CHAT (read-only)" if mode == "chat" else "Active mode: Queditor AGENT", system)
+                self.assertIn("CHAT (read-only)" if mode == "chat" else "Active mode: Qued AGENT", system)
                 app.send(b"n", b"Agent finished")
                 self.assertNotIn("NOT_APPROVED", json.dumps(provider.requests))
                 self.assertEqual(doc.read_text(), original)
@@ -426,13 +521,13 @@ class LiveSmokeTests(unittest.TestCase):
                 app.finish()
 
     def test_webfetch_requests_permission_to_browse_and_denial_reaches_provider(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-web-permission-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-web-permission-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("unchanged")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text(
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text(
                 "model: genai_1::test\nagent_modes:\n  Planner: chat\n"
             )
             # Reserved .example domain: denied browsing must never resolve/fetch it.
@@ -456,13 +551,13 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_untitled_agent_uses_temporary_backing_then_save_as_and_review_undo_use_real_file(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-untitled-agent-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-untitled-agent-") as directory:
             root = Path(directory)
             note = root / "note.md"
             note.write_text("approved tool context")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text(
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text(
                 "model: genai_1::test\nagent_modes:\n  Planner: chat\n"
             )
             provider = FakeProvider(note)
@@ -487,13 +582,13 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_current_selection_is_sent_automatically_with_line_label(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-selection-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-selection-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("one\ntwo\nthree")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text(
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text(
                 "model: genai_1::test\nagent_modes:\n  Planner: chat\n"
             )
             provider = FakeProvider(root / "unused", deny=True)
@@ -519,7 +614,7 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_connect_custom_endpoint_discovers_model_without_config_secret(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-connect-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-connect-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
@@ -536,7 +631,7 @@ class LiveSmokeTests(unittest.TestCase):
             app.send(b"e", b"Environment credential")
             app.send(b"COMPANY_API_KEY\r", b"Models")
             app.send(b"\x1b[B\r", b"company::test")
-            saved = (config / "queditor/config.yaml").read_text()
+            saved = (config / "qued/config.yaml").read_text()
             self.assertIn("base_url: " + provider.endpoint, saved)
             self.assertIn("env: COMPANY_API_KEY", saved)
             self.assertNotIn("local-test-key", saved)
@@ -561,15 +656,15 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_compaction_rejects_undeclared_tool_calls(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-compact-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-compact-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
             note = root / "note.md"
             note.write_text("COMPACTION_MUST_NOT_READ")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text("model: genai_1::test\n")
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text("model: genai_1::test\n")
             provider = FakeProvider(note)
             self.addCleanup(provider.close)
             app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test")
@@ -583,19 +678,19 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_opt_in_session_resume_does_not_change_document(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-session-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-session-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("original document")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text("persist_sessions: true\n")
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text("persist_sessions: true\n")
             first = TerminalApp(doc, config)
             self.addCleanup(first.close)
             first.send(b"\tremember this conversation\r", b"Mock mode is selected")
             first.send(b"\x11")
             first.finish()
-            records = list((root / "state/queditor").glob("session-*.json"))
+            records = list((root / "state/qued").glob("session-*.json"))
             self.assertEqual(len(records), 1)
             identifier = records[0].stem.removeprefix("session-")
             resumed = TerminalApp(doc, config)
@@ -604,10 +699,10 @@ class LiveSmokeTests(unittest.TestCase):
             self.assertEqual(doc.read_text(), "original document")
             resumed.send(b"\x11")
             resumed.finish()
-            self.assertEqual(len(list((root / "state/queditor").glob("session-*.json"))), 2)
+            self.assertEqual(len(list((root / "state/qued").glob("session-*.json"))), 2)
 
     def test_signal_shutdown_restores_terminal_and_preserves_recovery(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-signal-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-signal-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
@@ -617,20 +712,20 @@ class LiveSmokeTests(unittest.TestCase):
             app.process.terminate()
             app.finish()
             self.assertEqual(doc.read_text(), "")
-            records = list((root / "state/queditor").glob("recovery-*.json"))
+            records = list((root / "state/qued").glob("recovery-*.json"))
             self.assertEqual(len(records), 1)
             self.assertEqual(json.loads(records[0].read_text())["document"]["text"], "signal-safe text")
 
     def test_agent_mode_sends_full_document_and_saves_before_keep_review(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-live-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-live-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("helloUNATTACHED_SECRET")
             note = root / "note.md"
             note.write_text("approved tool context")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text("model: genai_1::test\n")
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text("model: genai_1::test\n")
             provider = FakeProvider(note)
             self.addCleanup(provider.close)
             app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test")
@@ -658,20 +753,20 @@ class LiveSmokeTests(unittest.TestCase):
             app.send(b"\x11")
             app.finish()
             self.assertEqual(doc.read_text(), "HELLO")
-            records = list((root / "state/queditor").glob("recovery-*.json"))
+            records = list((root / "state/qued").glob("recovery-*.json"))
             self.assertEqual(len(records), 1)
             self.assertEqual(json.loads(records[0].read_text())["document"]["text"], "helloUNATTACHED_SECRET")
 
     def test_agent_review_undo_saves_original_without_control_s(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-live-undo-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-live-undo-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("original")
             note = root / "note.md"
             note.write_text("approved tool context")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text("model: genai_1::test\n")
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text("model: genai_1::test\n")
             provider = FakeProvider(note)
             self.addCleanup(provider.close)
             app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test")
@@ -686,15 +781,15 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_denied_read_never_reaches_provider(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-live-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-live-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
             note = root / "note.md"
             note.write_text("DENIED_SECRET")
             config = root / "config"
-            (config / "queditor").mkdir(parents=True)
-            (config / "queditor/config.yaml").write_text("model: genai_1::test\n")
+            (config / "qued").mkdir(parents=True)
+            (config / "qued/config.yaml").write_text("model: genai_1::test\n")
             provider = FakeProvider(note, deny=True)
             self.addCleanup(provider.close)
             app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test")
@@ -707,7 +802,7 @@ class LiveSmokeTests(unittest.TestCase):
             app.finish()
 
     def test_crashed_document_can_be_recovered_without_writing_original(self):
-        with tempfile.TemporaryDirectory(prefix="queditor-recovery-") as directory:
+        with tempfile.TemporaryDirectory(prefix="qued-recovery-") as directory:
             root = Path(directory)
             doc = root / "draft.md"
             doc.write_text("")
@@ -718,7 +813,7 @@ class LiveSmokeTests(unittest.TestCase):
             deadline = time.monotonic() + 5
             records = []
             while time.monotonic() < deadline:
-                records = list((root / "state/queditor").glob("recovery-*.json"))
+                records = list((root / "state/qued").glob("recovery-*.json"))
                 if records:
                     break
                 select.select([app.master], [], [], 0.1)
@@ -734,7 +829,8 @@ class LiveSmokeTests(unittest.TestCase):
             restored.send(b"\t/recover\r", b"Choose a snapshot to restore")
             visible = "\n".join("".join(row) for row in restored.screen)
             self.assertIn(identifier[:8], visible)
-            restored.send(b"\x1b")
+            # Unambiguous Esc: a following slash must not be decoded as Alt+/.
+            restored.send(b"\x1b[27u")
             self.assertEqual(doc.read_text(), "")
             restored.send(b"/recover\r", b"Choose a snapshot to restore")
             restored.send(b"\r", b"Recovery restored")
