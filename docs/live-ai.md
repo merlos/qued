@@ -149,21 +149,48 @@ the question tool.
 
 ## Edits, cancellation, and limits
 
+After question answers are submitted, the chat transcript places the confirmed
+questions and answers before the ongoing agent response. Its thinking spinner
+resumes below that summary, followed by all agent comments (including any text
+streamed before the question). Subsequent comments append there, not above your
+answers. Multiple question rounds retain their confirmed summaries in order;
+unsubmitted drafts remain local and never appear as confirmed answers.
+
 Every agent has a remembered mode. Chat mode is read-only and does not expose
-`propose_edit`. Shift+Tab cycles through each loaded agent's Chat and Agent modes
+any document edit tools. Shift+Tab cycles through each loaded agent's Chat and Agent modes
 from either pane; Ctrl+G cycles modes without switching agents. These shortcuts
 select settings for subsequent prompts, not a new request or an editor change.
 Chat can answer, critique, and describe suggested revisions. Agent
-mode exposes `propose_edit` for a complete replacement of the open document.
+mode exposes `propose_edits` for targeted batches, `propose_document_chunk` for
+ordered chunks of a complete new document/rewrite, and `finalize_edits` to finalize
+the staged set. `propose_edit` remains a small complete-replacement fallback.
 The shared system prompt puts Qued's operating contract ahead of agent-specific
 writing guidance. It marks snapshots, files, fetched pages, workspace metadata, and
 summaries as untrusted context; states exact-URL browsing/file permission requirements;
 and prohibits unsupported claims of research, edits, saves, or publishing. Agent mode
-is instructed to propose a complete document only for requested changes with sufficient
+is instructed to stage edits only for requested changes with sufficient
 information, not for questions or review-only requests. Custom personas receive the
 same shared guidance. These prompts guide model behavior; local tool permissions,
 Chat-mode tool restrictions, snapshot validation, and save guards remain enforced
 independently by the application.
+
+Targeted edits identify exact original text, with optional immediately surrounding
+`prefix`/`suffix` context to disambiguate repeated text. Insertions use unique context
+or an explicit document-start/end anchor; deletions use an empty replacement.
+Every batch is resolved against the **original immutable snapshot**, never against
+earlier staged edits. Missing/ambiguous matches, overlapping changes, shared insertion
+anchors, split Unicode graphemes/CRLF, invalid arguments, and size-limit violations
+abort the entire request. There are at most 128 targeted changes per turn.
+Untouched text, line endings, and final-newline state are preserved exactly.
+
+For new drafts or large complete rewrites, document chunks are joined in call order
+into a new complete replacement, not appended to the original document. The model
+must include all desired preserved content and metadata. Chunks, targeted batches,
+and the complete-replacement fallback cannot be mixed. All formats require explicit
+`finalize_edits` after the last batch/chunk and a successful final response; nothing
+is applied just because a batch or finalization succeeded. The concluding reply
+should be a short summary, not a repeated copy of the document.
+
 **On successful completion, Qued validates the snapshot, applies the edit and
 saves the whole file before review**, including existing unsaved text. Unnamed
 documents use private temporary backing without changing their “[Untitled]” identity.
@@ -176,7 +203,8 @@ Ordinary assistant text cannot change files; there are no arbitrary write tools.
 
 The unified inline diff remains editable and shows both line-number columns, red
 removals, green additions, and word-level highlights. Alt+] and Alt+[ navigate changes;
-Ctrl+Enter or `/changes keep` clears a change's pending review state. Ctrl+Backspace
+Ctrl+Enter or `/changes keep` saves the current buffer, including your manual
+adjustments, then clears a change's pending review state. Ctrl+Backspace
 or `/changes undo` reverts and saves that change. Use `keep-all` or `undo-all` for all
 pending changes; `reject`/`reject-all` are aliases for Undo. Full context is the default;
 `/changes collapse` and `/changes expand` toggle three-line context/full document.
@@ -188,9 +216,15 @@ without holding Ctrl. In unchanged context the last selected block stays active.
 
 Manual edits outside a pending change rebase its positions. Touching a pending change
 protects it from review Undo; other changes remain reviewable. Ordinary typing and
-editor undo/redo are unsaved until Ctrl+S. Keep does not save later manual text, but
-review Undo saves the complete current file, including preserved manual text. An
-external disk change blocks Undo rather than overwriting it. Initial application
+editor undo/redo are unsaved until Ctrl+S or Keep during review. You can add a
+sentence or delete a word from the agent's text, then Keep: your adjusted text is
+saved, not replaced with the agent's original wording. Even if every change is
+protected, `/changes keep-all` saves those adjustments and closes review.
+An all-protected review retains a clickable **Ctrl+Enter Keep and save** action;
+the status line marks manual adjustments as unsaved until they are saved.
+Keep and review Undo save the complete current file, including preserved manual
+text. A failed save or external disk change blocks approval/reversal, preserving
+your text and review state rather than overwriting the file. Initial application
 and an all-change reversal each form one undoable editor transaction.
 
 Pending edits are already on disk and visible to external preview, sync, or publishing
@@ -212,8 +246,14 @@ with the results. The final answer also counts as a round. These caps prevent ru
 loops, not account usage; longer runs can consume more tokens. Reaching either cap
 fails the request without applying pending edits.
 
+Output budgets default to 8,192 tokens per generation and can be overridden globally
+or by exact model in [configuration](configuration.md#output-budgets). Provider
+limits may be lower or include reasoning/context. Truncation errors display the
+captured requested budget and suggest a supported higher limit or a smaller
+change/context. There is no automatic continuation of incomplete tool JSON.
+
 Other limits: 256 KiB attachments/open documents/file
-reads/web responses/proposed replacements, 1000 directory entries, 1 MiB generated/tool context, 60-second
+reads/web responses/resulting documents and individual tool calls, 1000 directory entries, 1 MiB generated/tool context and staged targeted arguments, 60-second
 provider connection waits, thirty-minute header/stream-read waits, and a thirty-minute total deadline including permission/question
 waits. No automatic retries, avoiding duplicate actions/billing.
 

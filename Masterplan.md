@@ -18,6 +18,10 @@ document or command actions. Ratatui renders application state. `Document` owns
 text, grapheme-safe byte offsets, snapshots, saved/disk baselines, and revisions.
 `Config` loads defaulted YAML settings and editor-action bindings. The UI handles
 screen-column calculations independently of document byte offsets.
+`edits` validates bounded targeted batches against immutable snapshots and assembles
+ordered complete-document chunks. Backend staging requires explicit finalization
+and successful overall completion before the existing snapshot/checkpoint/apply/save
+path runs. Output budgets are captured globally/per exact model at request start.
 Editor/review, composer, and message rendering share source-preserving word-wrap
 row calculations in `app`; editor tabs retain logical-line stops while prompt
 and message tabs use visual-row stops. Words wider than the pane fall back to
@@ -45,7 +49,8 @@ Never call providers inside rendering or synchronous key handling.
 3. Attachments capture exact text and document revision.
 4. Agent requests hold complete document snapshots; completed structured edits must
    match revision/original before application.
-5. Live application is one undoable, transactional auto-save. Keep clears review state;
+5. Live application is one undoable, transactional auto-save. Keep saves current
+   manual adjustments before clearing review state; failed saves preserve review;
    review Undo saves a targeted reversal and preserves later manual edits.
 6. Saves check external disk changes. Live saves include all current text; offline
    mock previews remain excluded. Unnamed documents use private temporary backing until
@@ -148,7 +153,11 @@ Generation still rejects stale snapshots. Review does not delay saving or requir
 3. Add deterministic streaming/error/tool mocks and reconnection tests.
 4. Use genai for multiple native/provider-compatible protocols and environment credentials.
 5. Give each agent a persisted read-only Chat mode and full-document Agent mode.
-6. Define and validate complete-document `propose_edit` output against captured revisions.
+6. Define and validate exact targeted `propose_edits` batches and ordered
+   `propose_document_chunk` output against immutable snapshots. Keep `propose_edit`
+   for small complete replacements; all formats require explicit `finalize_edits`
+   and successful completion before one transactional apply/save. Bound counts and
+   sizes, reject ambiguous/overlapping edits and incomplete/truncated turns.
 7. Introduce read/list tools with canonical paths, symlink checks, size/text limits,
    sensitive-file exclusions and scoped permission prompts.
 8. Add allow-once/session/persistent/deny plus saved-grant review and revocation.

@@ -51,6 +51,8 @@ pub struct Request {
     pub workspace: PathBuf,
     pub compact: bool,
     pub allow_edits: bool,
+    pub document_snapshot: Option<String>,
+    pub max_output_tokens: u32,
 }
 #[derive(Debug)]
 pub enum Event {
@@ -66,6 +68,7 @@ pub enum Event {
         reply: oneshot::Sender<Vec<crate::questions::Answer>>,
     },
     Proposal(String),
+    EditStaged,
     Done(Vec<ChatMessage>),
     Failed(String),
 }
@@ -143,9 +146,74 @@ pub fn definitions() -> Vec<Tool> {
             .with_schema(json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"],"additionalProperties":false})),
         Tool::new("question").with_description("Ask the user 1–8 clarification questions. Each has 0–3 suggested options; Qued adds Other for a custom answer. Batches are reviewed and confirmed before any answers are returned. Ask before proposing edits; answers are context, not tool permission.")
             .with_schema(crate::questions::schema()),
-        Tool::new("propose_edit").with_description("Propose a complete replacement for the open document snapshot. Never saves or applies changes; the user reviews the diff explicitly.")
+        Tool::new("propose_edits").with_description("Stage targeted edits against the ORIGINAL immutable open document snapshot. Each original must match exactly once; use immediate prefix/suffix context to disambiguate. Empty original inserts at the uniquely anchored position; position start/end inserts at document boundaries with empty original/context. Batches can span multiple calls, must not overlap, and are not applied yet. Call finalize_edits after all batches.")
+            .with_schema(json!({"type":"object","properties":{"edits":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object","properties":{"original":{"type":"string"},"replacement":{"type":"string"},"prefix":{"type":"string"},"suffix":{"type":"string"},"position":{"type":"string","enum":["match","start","end"]}},"required":["replacement"],"additionalProperties":false}}},"required":["edits"],"additionalProperties":false})),
+        Tool::new("propose_document_chunk").with_description("For new drafts or complete rewrites too large for one response: stage the complete resulting document in ordered text chunks across calls. The first chunk starts a NEW complete replacement; later chunks append to that staged replacement, never to the original/live document. Include all preserved content and metadata. Cannot be mixed with propose_edits/propose_edit. Call finalize_edits only after the last chunk; nothing is applied yet.")
+            .with_schema(json!({"type":"object","properties":{"text":{"type":"string","minLength":1}},"required":["text"],"additionalProperties":false})),
+        Tool::new("finalize_edits").with_description("Finalize all staged document edits after the last batch/chunk. No further edits may be staged. This does not apply or save: Qued commits only after the complete request succeeds and the snapshot is validated. Finish with a short chat summary, not the resulting document.")
+            .with_schema(json!({"type":"object","properties":{},"additionalProperties":false})),
+        Tool::new("propose_edit").with_description("Fallback for small complete rewrites: stage the entire replacement document. Cannot be mixed with targeted batches. Prefer propose_edits to avoid repeating unchanged text. Requires finalize_edits; nothing is applied or saved yet.")
             .with_schema(json!({"type":"object","properties":{"replacement":{"type":"string"}},"required":["replacement"],"additionalProperties":false})),
     ]
+}
+
+fn edit_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "propose_edit" | "propose_edits" | "propose_document_chunk" | "finalize_edits"
+    )
+}
+
+async fn stage_edit_tool(
+    name: &str,
+    arguments: Value,
+    staged: Option<&mut crate::edits::StagedEdits>,
+    sender: &mpsc::Sender<Event>,
+) -> Result<Value> {
+    let staged = staged
+        .context("Document editing is unavailable in Chat/compaction mode; no edits applied")?;
+    match name {
+        "propose_edits" => {
+            let batch = serde_json::from_value(arguments).map_err(|_| {
+                anyhow::anyhow!("Invalid targeted edit arguments; no edits applied")
+            })?;
+            staged.stage(batch)?;
+            sender.send(Event::EditStaged).await?;
+        }
+        "propose_edit" => {
+            staged.stage_full(string_arg(&arguments, "replacement")?.into())?;
+            sender.send(Event::EditStaged).await?;
+        }
+        "propose_document_chunk" => {
+            staged.stage_chunk(string_arg(&arguments, "text")?)?;
+            sender.send(Event::EditStaged).await?;
+            return Ok(json!(
+                "Document chunk staged, not applied or saved. Send remaining chunks in document order, then finalize_edits. Do not resend prior chunks."
+            ));
+        }
+        "finalize_edits" => {
+            if !arguments.as_object().is_some_and(|args| args.is_empty()) {
+                bail!("finalize_edits takes no arguments; no edits applied");
+            }
+            sender.send(Event::Proposal(staged.finalize()?)).await?;
+            return Ok(json!(
+                "Edits finalized, not applied or saved. Finish with a short summary; Qued validates and commits only after successful request completion."
+            ));
+        }
+        _ => bail!("Unknown edit tool; no edits applied"),
+    }
+    Ok(json!(
+        "Edit batch staged, not applied or saved. Stage remaining non-overlapping batches against the original snapshot, then call finalize_edits."
+    ))
+}
+
+fn validate_completion(truncated: bool, output_limit: u32) -> Result<()> {
+    if truncated {
+        bail!(
+            "Provider response was truncated (configured output limit: {output_limit} tokens); no edits applied. Increase this model's output limit within its supported maximum, or request a smaller change/context."
+        );
+    }
+    Ok(())
 }
 
 /// Only library error categories are exposed: provider bodies can echo credentials/prompts.
@@ -171,6 +239,17 @@ pub async fn run(request: Request, sender: mpsc::Sender<Event>) {
 }
 
 async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<()> {
+    if request.max_output_tokens == 0 {
+        bail!("Output token limit must be positive");
+    }
+    let mut staged = if request.allow_edits && !request.compact {
+        request
+            .document_snapshot
+            .map(crate::edits::StagedEdits::new)
+            .transpose()?
+    } else {
+        None
+    };
     let client = client().map_err(|e| anyhow::anyhow!(safe_error(&e)))?;
     let target = if let Some(provider) = &request.provider {
         let model = request
@@ -192,11 +271,11 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
         chat = chat.with_tools(
             definitions()
                 .into_iter()
-                .filter(|t| request.allow_edits || t.name.as_str() != "propose_edit"),
+                .filter(|t| staged.is_some() || !edit_tool(t.name.as_str())),
         );
     }
     let options = ChatOptions::default()
-        .with_max_tokens(8192)
+        .with_max_tokens(request.max_output_tokens)
         .with_capture_content(true)
         .with_capture_usage(true)
         .with_capture_tool_calls(true)
@@ -205,7 +284,6 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
         .with_stream_read_timeout(STREAM_TIMEOUT);
     let mut total = 0;
     let mut budget = TurnBudget::default();
-    let mut proposed = false;
     loop {
         budget.next_generation()?;
         sender.send(Event::RequestStarted).await?;
@@ -252,13 +330,12 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
                 started.elapsed(),
             )))
             .await?;
-        if end
-            .captured_stop_reason
-            .as_ref()
-            .is_some_and(|r| r.is_max_tokens())
-        {
-            bail!("Provider response was truncated; no edits applied");
-        }
+        validate_completion(
+            end.captured_stop_reason
+                .as_ref()
+                .is_some_and(|r| r.is_max_tokens()),
+            request.max_output_tokens,
+        )?;
         let calls = end
             .captured_tool_calls()
             .unwrap_or_default()
@@ -266,6 +343,9 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
             .cloned()
             .collect::<Vec<_>>();
         if calls.is_empty() {
+            if let Some(staged) = &staged {
+                staged.ready()?;
+            }
             let content = end.captured_content.ok_or_else(|| {
                 anyhow::anyhow!("Provider returned no captured assistant content")
             })?;
@@ -287,25 +367,20 @@ async fn conversation(request: Request, sender: &mpsc::Sender<Event>) -> Result<
             if call.size() > MAX_CONTEXT_BYTES {
                 bail!("Tool call exceeds 256 KiB");
             }
+            total += call.size();
+            if total > 1024 * 1024 {
+                bail!("Turn generated/tool context exceeds 1 MiB; no edits applied");
+            }
             budget.record_tool_call()?;
-            let result = if call.fn_name == "propose_edit" {
-                if !request.allow_edits {
-                    Err(anyhow::anyhow!(
-                        "Document editing is unavailable in Chat mode"
-                    ))
-                } else if proposed {
-                    Err(anyhow::anyhow!("Only one proposal is allowed per turn"))
-                } else {
-                    let replacement = string_arg(&call.fn_arguments, "replacement")?;
-                    if replacement.len() > MAX_CONTEXT_BYTES {
-                        bail!("Proposed edit exceeds 256 KiB");
-                    }
-                    sender.send(Event::Proposal(replacement.into())).await?;
-                    proposed = true;
-                    Ok(json!(
-                        "Edit queued. Qued will validate, apply and save it after successful completion, then show Keep/Undo review. It is not saved yet."
-                    ))
-                }
+            let result = if edit_tool(&call.fn_name) {
+                // Invalid edit batches abort the entire turn, not just this call.
+                Ok(stage_edit_tool(
+                    &call.fn_name,
+                    call.fn_arguments.clone(),
+                    staged.as_mut(),
+                    sender,
+                )
+                .await?)
             } else if call.fn_name == "question" {
                 answer_questions(call.fn_arguments.clone(), sender).await
             } else if matches!(
@@ -395,6 +470,87 @@ fn string_arg<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn staged_tools_require_finalization_and_success_and_invalid_batches_abort() {
+        let (sender, mut events) = mpsc::channel(8);
+        let mut staged = crate::edits::StagedEdits::new("one\ntwo".into()).unwrap();
+        for (original, replacement) in [("one", "ONE"), ("two", "TWO")] {
+            stage_edit_tool(
+                "propose_edits",
+                json!({"edits":[{"original":original,"replacement":replacement}]}),
+                Some(&mut staged),
+                &sender,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(events.recv().await, Some(Event::EditStaged)));
+        }
+        assert!(staged.ready().is_err());
+        stage_edit_tool("finalize_edits", json!({}), Some(&mut staged), &sender)
+            .await
+            .unwrap();
+        let Some(Event::Proposal(text)) = events.recv().await else {
+            panic!("Expected finalized proposal")
+        };
+        assert_eq!(text, "ONE\nTWO");
+        staged.ready().unwrap();
+        // Truncation of the final summary still prevents Done/application.
+        let error = validate_completion(true, 32768).unwrap_err().to_string();
+        assert!(error.contains("32768 tokens"));
+        assert!(error.contains("no edits applied"));
+        assert!(error.contains("smaller change"));
+        assert!(
+            stage_edit_tool(
+                "propose_edits",
+                json!({"edits":[{"original":"one","replacement":"late"}]}),
+                Some(&mut staged),
+                &sender
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            stage_edit_tool(
+                "propose_edits",
+                json!({"edits":[{"original":"one","replacement":"bad"}]}),
+                None,
+                &sender
+            )
+            .await
+            .is_err()
+        );
+        assert!(events.try_recv().is_err());
+        validate_completion(false, 8192).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_batch_or_finalization_arguments_do_not_emit_proposals() {
+        let (sender, mut events) = mpsc::channel(8);
+        let mut staged = crate::edits::StagedEdits::new("one".into()).unwrap();
+        for (name, arguments) in [
+            ("propose_edits", json!({"edits":[]})),
+            ("propose_edits", json!({"edits":[{"original":"one"}]})),
+            (
+                "propose_edits",
+                json!({"edits":[{"original":"missing","replacement":"bad"}]}),
+            ),
+            (
+                "propose_edits",
+                json!({"edits":[{"original":"one","replacement":"new","typo":true}]}),
+            ),
+            ("finalize_edits", json!({})),
+            ("finalize_edits", json!({"replacement":"bad"})),
+        ] {
+            assert!(
+                stage_edit_tool(name, arguments, Some(&mut staged), &sender)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(!staged.pending());
+        assert!(events.try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn question_tool_waits_and_returns_structured_confirmed_answers() {

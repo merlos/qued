@@ -100,7 +100,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let detail = if let Some(review) = &app.review {
         format!(
             " {} · {} pending · Change {} of {} · Alt+[ / Alt+] navigate · Ctrl+Enter Keep · Ctrl+Backspace Undo",
-            if app.document.is_temporary() {
+            if app.document.unsaved_changes() {
+                "UNSAVED manual adjustments"
+            } else if app.document.is_temporary() {
                 "TEMP SAVED · Ctrl+S filename"
             } else {
                 "SAVED"
@@ -745,6 +747,36 @@ fn review_editor(frame: &mut Frame, app: &mut App) {
         lines.push(Line::from(""));
         positions.push(Some((new_lines.len(), 0)));
         row_hunks.push(None);
+    }
+    if review.pending() == 0 && review.hunks.iter().any(|h| h.protected) {
+        // Protected changes still need an explicit save/approval affordance.
+        let label = "Manual adjustments · Ctrl+Enter Keep and save";
+        let wrapped = wrapped(label, usize::from(area.width));
+        let action = wrapped.iter().enumerate().find_map(|(row, line)| {
+            line.find("Ctrl+Enter")
+                .map(|start| (row, display_width(&line[..start])))
+        });
+        let count = wrapped.len();
+        for (row, line) in wrapped.into_iter().enumerate() {
+            lines.insert(
+                row,
+                Line::styled(line, Style::default().fg(app.theme.yellow)),
+            );
+            positions.insert(row, None);
+            row_hunks.insert(row, None);
+        }
+        for (row, ..) in &mut buttons {
+            *row += count;
+        }
+        if let Some((row, start)) = action {
+            buttons.push((
+                row,
+                review.active,
+                start,
+                display_width("Ctrl+Enter Keep and save"),
+                true,
+            ));
+        }
     }
     for (visual, position) in positions.iter().enumerate() {
         if position.is_some_and(|(row, start)| row == cursor_row && start <= cursor_col) {
@@ -3678,6 +3710,30 @@ mod tests {
             assert!(r.abs_diff(next_r) <= 13);
             assert!(g.abs_diff(next_g) <= 13);
             assert!(b.abs_diff(next_b) <= 13);
+        }
+    }
+
+    #[test]
+    fn slash_popup_renders_before_existing_prompt_text() {
+        for (width, height) in [(140, 40), (80, 30)] {
+            let mut app = App::new(None).unwrap();
+            app.focus = Focus::Chat;
+            app.compose_insert("界👩‍💻 existing draft\nsecond line");
+            app.key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Home,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            app.compose_insert("/");
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert!(app.popup_choice_area.height > 0);
+            let buffer = terminal.backend().buffer();
+            let popup = app.popup_choice_area;
+            let text = (popup.y..popup.bottom())
+                .flat_map(|y| (popup.x..popup.right()).map(move |x| buffer[(x, y)].symbol()))
+                .collect::<String>();
+            assert!(text.contains("/connect"));
+            assert_eq!(app.composer, "/界👩‍💻 existing draft\nsecond line");
         }
     }
 

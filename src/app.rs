@@ -476,13 +476,37 @@ impl App {
         self.follow_chat = true;
     }
 
+    pub(crate) fn message_before(
+        &mut self,
+        index: usize,
+        role: &'static str,
+        text: impl Into<String>,
+    ) {
+        self.message(role, text);
+        let message = self.messages.pop().expect("Newly appended message");
+        self.messages.insert(index, message);
+        if let Some(selection) = &mut self.message_selection
+            && selection.message >= index
+        {
+            selection.message += 1;
+        }
+        if let Some(ChatDrag::Message(message)) = &mut self.chat_drag
+            && *message >= index
+        {
+            *message += 1;
+        }
+        // Rendering will rebuild hitboxes for the new transcript indices.
+        self.chat_view_rows.clear();
+    }
+
     pub fn completions(&self) -> Vec<&'static str> {
-        if !self.composer.starts_with('/') || self.composer.contains(char::is_whitespace) {
+        let prefix = &self.composer[..self.composer_cursor];
+        if !prefix.starts_with('/') || prefix.contains(char::is_whitespace) {
             return vec![];
         }
         COMMANDS
             .iter()
-            .filter(|(c, _)| c.starts_with(&self.composer))
+            .filter(|(c, _)| c.starts_with(prefix))
             .map(|(c, _)| *c)
             .collect()
     }
@@ -900,10 +924,8 @@ impl App {
             .or_else(|| choices.first())
             .copied()
         {
-            self.composer = format!("{c} ");
-            self.composer_cursor = self.composer.len();
-            self.composer_anchor = None;
-            self.completion = 0;
+            self.composer_anchor = Some(0);
+            self.compose_insert(&format!("{c} "));
         }
     }
 
@@ -2121,6 +2143,18 @@ impl App {
     }
 
     fn resolve_applied_changes(&mut self, keep: bool, all: bool) {
+        // Approval saves the actual live buffer, including the user's adjustments.
+        // Do this before syncing/resolving review so a failed save leaves it intact.
+        if keep
+            && self.review.is_some()
+            && let Err(error) = self.document.save(None)
+        {
+            self.notify(
+                Level::Error,
+                format!("Changes not kept; could not save: {error:#}"),
+            );
+            return;
+        }
         self.sync_review();
         let Some(review) = &self.review else {
             return;
@@ -2137,8 +2171,12 @@ impl App {
                 self.review = None;
             }
             self.notify(
-                Level::Info,
-                "No pending changes here; manual edits are preserved",
+                if keep { Level::Success } else { Level::Info },
+                if keep {
+                    "Changes kept · manual adjustments saved"
+                } else {
+                    "No pending changes here; manual edits are preserved"
+                },
             );
             return;
         }
@@ -2182,8 +2220,6 @@ impl App {
                 if keep { "kept" } else { "undone" },
                 if self.document.is_temporary() {
                     "; private temporary file; Ctrl+S chooses a filename"
-                } else if keep && self.document.dirty() {
-                    "; manual edits still unsaved"
                 } else {
                     ""
                 }
@@ -2790,7 +2826,10 @@ impl App {
                     .find(|(rect, _, _)| rect.contains((x, y).into()))
                     .copied()
                     && let Some(review) = &mut self.review
-                    && review.hunks.get(index).is_some_and(|h| !h.resolved)
+                    && review
+                        .hunks
+                        .get(index)
+                        .is_some_and(|h| !h.resolved || (keep && review.pending() == 0))
                 {
                     review.active = index;
                     self.focus = Focus::Editor;
@@ -3240,6 +3279,33 @@ fn key_name(key: KeyEvent) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn inserting_question_summary_rebases_message_selection_drag_and_clears_hitboxes() {
+        let mut app = App::new(None).unwrap();
+        app.messages.clear();
+        app.message("assistant", "Agent comment");
+        app.message("system", "Other message");
+        app.message_selection = Some(MessageSelection {
+            message: 1,
+            anchor: 0,
+            cursor: 5,
+        });
+        app.chat_drag = Some(ChatDrag::Message(1));
+        app.chat_view_rows.push(Some(ChatRow {
+            message: 1,
+            row: ComposerRow { start: 0, end: 5 },
+            left: 0,
+        }));
+        app.message_before(0, "you", "Question and answer");
+        assert_eq!(app.messages[0].text, "Question and answer");
+        assert_eq!(app.messages[1].text, "Agent comment");
+        assert_eq!(app.messages[2].text, "Other message");
+        assert_eq!(app.message_selection.as_ref().unwrap().message, 2);
+        assert!(matches!(app.chat_drag, Some(ChatDrag::Message(2))));
+        assert!(app.chat_view_rows.is_empty());
+        assert!(app.follow_chat);
+    }
+
+    #[test]
     fn embedded_default_agents_preserve_order_and_include_specialized_guidance() {
         let agents = Agent::defaults().unwrap();
         assert!(agents.len() >= 2);
@@ -3520,6 +3586,53 @@ mod tests {
         assert!(a.composer.is_empty());
         assert!(!a.messages.iter().any(|message| message.role == "you"));
         assert_eq!(a.prompt_history.last().unwrap(), "/connect");
+    }
+
+    #[test]
+    fn slash_at_start_of_existing_draft_shows_and_filters_commands() {
+        for draft in ["existing draft", "界 e\u{301}👩‍💻\nsecond line"] {
+            let mut a = app();
+            a.focus = Focus::Chat;
+            a.compose_insert(draft);
+            a.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+            a.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+            assert_eq!(a.completions().len(), COMMANDS.len());
+            assert_eq!(a.composer, format!("/{draft}"));
+            a.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+            a.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+            assert_eq!(a.completions(), vec!["/connect", "/compact"]);
+            a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(a.composer, format!("/connect {draft}"));
+            assert_eq!(a.composer_cursor, "/connect ".len());
+            assert!(a.completions().is_empty());
+            assert!(a.connect.is_none());
+        }
+    }
+
+    #[test]
+    fn command_at_start_of_existing_draft_can_run_with_preserved_arguments() {
+        let mut a = app();
+        a.focus = Focus::Chat;
+        a.document.insert("before 界👩‍💻 after");
+        a.compose_insert("界👩‍💻");
+        a.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        for c in "/fin".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.completions(), vec!["/find"]);
+        a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.composer.is_empty());
+        assert_eq!(a.prompt_history.last().unwrap(), "/find 界👩‍💻");
+        assert_eq!(a.document.selected_text(), Some("界👩‍💻"));
+    }
+
+    #[test]
+    fn slash_suggestions_require_a_command_prefix_before_the_cursor() {
+        for draft in ["text /co", "/theme unknown", "/co\ntext", "/unknown"] {
+            let mut a = app();
+            a.compose_insert(draft);
+            assert!(a.completions().is_empty(), "{draft}");
+        }
     }
 
     #[test]

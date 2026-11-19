@@ -17,6 +17,10 @@ pub struct Config {
     pub model: String,
     pub models: Vec<String>,
     pub providers: BTreeMap<String, Provider>,
+    /// Requested output budget for each provider generation, not the whole turn.
+    pub max_output_tokens: u32,
+    /// Exact provider::model overrides; provider model lists do not report capabilities.
+    pub model_output_limits: BTreeMap<String, u32>,
     pub persist_sessions: bool,
     pub recovery: bool,
 }
@@ -31,6 +35,8 @@ impl Default for Config {
             model: "mock".into(),
             models: vec!["mock".into()],
             providers: BTreeMap::new(),
+            max_output_tokens: 32768,
+            model_output_limits: BTreeMap::new(),
             persist_sessions: false,
             recovery: true,
         }
@@ -83,7 +89,31 @@ impl Config {
         for (id, provider) in &c.providers {
             validate_provider(id, provider)?;
         }
+        c.validate_output_limits()?;
         Ok(c)
+    }
+
+    pub fn validate_output_limits(&self) -> Result<()> {
+        if self.max_output_tokens == 0 {
+            bail!("max_output_tokens must be positive");
+        }
+        for (model, limit) in &self.model_output_limits {
+            if !model.contains("::") {
+                bail!("model_output_limits keys must be exact provider::model identifiers");
+            }
+            self.validate_model_ref(model)?;
+            if *limit == 0 {
+                bail!("model_output_limits values must be positive");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn output_limit(&self, model: &str) -> u32 {
+        self.model_output_limits
+            .get(model)
+            .copied()
+            .unwrap_or(self.max_output_tokens)
     }
 
     pub fn validate_model_ref(&self, model: &str) -> Result<()> {
@@ -431,6 +461,33 @@ mod tests {
         assert_eq!(c.agent, "Planner");
         assert_eq!(c.agent_modes["Planner"], AgentMode::Agent);
         assert_eq!(c.schema_version, 1);
+        assert_eq!(c.max_output_tokens, 32768);
+        assert_eq!(c.output_limit("openai::gpt-4o-mini"), 32768);
+    }
+    #[test]
+    fn output_limits_validate_resolve_and_round_trip() {
+        let config: Config = serde_yaml_ng::from_str(
+            "max_output_tokens: 16384\nmodel_output_limits:\n  openai::gpt-4o-mini: 32768\n",
+        )
+        .unwrap();
+        config.validate_output_limits().unwrap();
+        assert_eq!(config.output_limit("openai::gpt-4o-mini"), 32768);
+        assert_eq!(config.output_limit("openai::gpt-4o"), 16384);
+        let restored: Config =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.model_output_limits, config.model_output_limits);
+        for yaml in [
+            "max_output_tokens: 0",
+            "model_output_limits:\n  openai::gpt-4o-mini: 0",
+            "model_output_limits:\n  gpt-4o-mini: 16384",
+            "model_output_limits:\n  typo::model: 16384",
+        ] {
+            let invalid: Config = serde_yaml_ng::from_str(yaml).unwrap();
+            assert!(invalid.validate_output_limits().is_err(), "{yaml}");
+        }
+        for yaml in ["max_output_tokens: -1", "max_output_tokens: 4294967296"] {
+            assert!(serde_yaml_ng::from_str::<Config>(yaml).is_err());
+        }
     }
     #[test]
     fn rejects_unknown_fields() {

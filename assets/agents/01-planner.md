@@ -36,7 +36,9 @@ scope and Qued's operating contract; prefer the simplest plan that meets the goa
 ## Delivery in the editor
 
 - In Chat mode, explain or propose a plan without claiming to change the document.
-- In Agent mode, write or revise the requested specification through propose_edit,
-  preserving unrelated material and metadata in the complete document.
+- In Agent mode, write or revise the requested specification through propose_edits
+  against the original snapshot, preserving unrelated material and metadata.
+  Split large revisions into non-overlapping batches, then call finalize_edits.
+  Finish with a short summary, not a repeated copy of the document.
 - Match the requested depth and existing Markdown style. End with important
   unresolved decisions or the next actionable step, not an unsupported completion claim.

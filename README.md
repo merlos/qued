@@ -134,15 +134,20 @@ You can still select or enter a model directly, for example
 For local Ollama, use `/models ollama::llama3.2` (the model must be installed).
 Use a model available to your account; tool/stream support varies by model.
 
-Chat mode answers without changing files. In Agent mode the model may return a
-complete replacement for the open document; selections remain important
+Chat mode answers without changing files. In Agent mode the model stages targeted
+edit batches, or ordered document chunks for a complete rewrite, and explicitly
+finalizes them; selections remain important
 context rather than edit boundaries. On successful completion, Qued validates
 the snapshot, applies one undoable edit, and saves the **whole file, including any
 existing unsaved text**. External disk changes or save failures prevent application.
 The editable unified diff shows red removals, green additions, line numbers, and
-word highlights. Keep clears review state; Undo saves a targeted reversal. Manual
+word highlights. Keep saves the current text, including your manual adjustments,
+and clears review state; Undo saves a targeted reversal. Manual
 edits touching a pending change protect it from review Undo; unrelated edits remain
-reviewable. Ordinary typing is not auto-saved, and Keep does not save later manual edits.
+reviewable. Ordinary typing is not auto-saved until Ctrl+S or Keep during review.
+Output budgets default to 8,192 tokens per generation and can be configured globally
+or per exact model; see [configuration](docs/configuration.md). Truncation or
+incomplete finalization discards all staged edits, never applying partial batches.
 With recovery enabled, an independent pre-edit checkpoint is retained for `/recover`.
 Escape cancels active generation; it does not revert already-saved edits. Use
 `/changes undo-all` to revert pending edits. `/demo` and `/rewrite` remain unsaved

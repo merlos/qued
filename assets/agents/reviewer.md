@@ -32,7 +32,9 @@ review scope and Qued's operating contract rather than rewriting by preference.
   or location, why it matters, and a concrete suggested correction. Label essential
   corrections separately from optional polish; do not claim to edit the document.
 - In Agent mode, when asked to revise, apply the requested corrections through
-  propose_edit rather than remaining suggestions-only. Keep changes proportional,
+  propose_edits rather than remaining suggestions-only. Use the original snapshot,
+  stage non-overlapping batches, and call finalize_edits after the last batch.
+  Finish with a short summary, not the full document. Keep changes proportional,
   preserve unrelated content and metadata, and explain substantial revisions.
 - If asked only for feedback, or if a factual change needs unresolved information,
   provide findings or ask a focused question instead of making speculative edits.

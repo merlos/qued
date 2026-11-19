@@ -18,6 +18,8 @@ agent: Planner         # last selected built-in or custom agent
 agent_modes:            # remembered chat/agent mode by agent name
   Planner: agent        # pristine-install default
 model: mock            # or a genai provider::model identifier
+max_output_tokens: 32768 # requested output budget per model generation
+model_output_limits: {} # optional exact provider::model overrides
 models: [mock]         # suggestions shown by /models
 providers: {}          # connections created by /connect
 persist_sessions: false
@@ -40,6 +42,29 @@ requires a durable pre-edit snapshot before auto-save and retains it after Keep/
 `/theme daylight` changes the theme for the current run only.
 Both themes include a lighter surface for the borderless editor, prompt, and
 submitted messages; agent replies use the standard background.
+
+## Output budgets
+
+`max_output_tokens` is the requested output-token budget for each provider generation
+(including tool arguments), defaulting to 32,768. `model_output_limits` overrides it
+for an exact `provider::model` identifier:
+
+```yaml
+max_output_tokens: 32768
+model_output_limits:
+  openai::gpt-4o-mini: 16384
+```
+
+Values must be positive integers. Unknown namespaces and unqualified model keys
+are rejected; custom provider namespaces must be defined in `providers`. Choose
+limits supported by your provider/model—discovery does not supply verified output
+capabilities. Unsupported limits can cause provider errors; Qued does not silently
+clamp them or retry. Settings are captured when a request starts and apply to Chat,
+Agent, and compaction. Changes to YAML take effect after restarting.
+
+Long edits normally use targeted batches or complete-document chunks instead of
+regenerating unchanged text in one response. Truncated responses still discard all
+staged edits; higher output limits do not remove model/context or byte-size limits.
 
 ## Providers and credentials
 

@@ -128,6 +128,9 @@ Enter submits. Ctrl+J inserts a newline; Shift+Enter works in terminals that
 distinguish it. Typing `/` shows suggestions: arrows select, Enter completes and
 runs the highlighted command, and Tab completes without submitting so you can add
 arguments. For example, `/co` then Enter opens `/connect` immediately.
+Typing `/` as the first character also opens the full command list when the prompt
+already contains text. Suggestions match only the prefix before the cursor;
+completion preserves the text after the cursor as command arguments.
 Slash commands are not echoed as `You:` messages in either mode; command output
 and errors remain visible, and successful commands can still be recalled with Up.
 `/help` lists commands; `/version` displays the running Qued version (for example,
@@ -213,8 +216,17 @@ discards the proposal. Cancel the confirmation to return to review.
 
 ## Live edits and file permissions
 
+When you answer an agent's question, the confirmed question/answer summary appears
+before its continuing response. The thinking spinner and the agent's comments
+appear below that summary, so follow-up text never jumps above your answers.
+
 Chat mode has no edit tool and never changes files. Agent mode sends a snapshot of
 the complete open document; selections are important context, not edit boundaries.
+The agent can stage exact targeted changes in multiple non-overlapping batches,
+or send a complete new draft/rewrite in ordered document chunks. All changes stay
+staged until explicit finalization and successful request completion. Truncation,
+invalid batches, or missing finalization discard the whole set, not just its last
+piece. Configure per-generation output budgets in [configuration](configuration.md#output-budgets).
 **Live Agent edits apply and save automatically before review**, after successful
 completion and revision/original-content validation. Unnamed documents automatically
 use a private temporary backing file while staying “[Untitled]”. Ctrl+S still asks
@@ -238,14 +250,21 @@ Long lines wrap with aligned continuation rows. Full context is shown by default
 restores the full document. Keyboard navigation into hidden context expands it.
 
 - Alt+[ / Alt+] selects a change.
-- Ctrl+Enter or `/changes keep` confirms it; nothing is applied or saved by Keep.
+- Ctrl+Enter or `/changes keep` saves your current text and confirms the change.
 - Ctrl+Backspace or `/changes undo` reverts it and saves the reversal immediately.
 - `/changes keep-all` and `/changes undo-all` resolve all remaining changes.
 - `reject` and `reject-all` remain aliases for Undo, for compatibility.
 
 The next pending change is selected after a decision. Kept/undone changes lose
 their diff highlights. Typing edits the current live document but is not auto-saved;
-Ctrl+S saves it normally. Keep does not save later manual edits. Review Undo also
+Ctrl+S saves it normally. You can add a sentence or delete a word from the agent's
+text, then Keep to save and approve your adjusted version. `/changes keep-all`
+also saves adjustments to manually protected changes before closing review.
+When all changes have been manually protected, the editor shows a clickable
+**Ctrl+Enter Keep and save** action for approving your adjusted text.
+Keep never restores the agent's original wording. Failed saves/external file
+changes preserve your text and review state so you can retry or Save As.
+Review Undo also
 saves any remaining manual text as part of saving the whole file. Edits outside an
 agent change shift its review positions; edits that touch it protect that change
 from review Undo, so your work is never blindly replaced. Ordinary Ctrl+Z undo/redo

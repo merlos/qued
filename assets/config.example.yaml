@@ -2,6 +2,8 @@ schema_version: 1
 theme: mocha
 keybindings: vscode
 model: mock
+max_output_tokens: 32768
+model_output_limits: {}
 models:
   - mock
   - openai::gpt-4o-mini

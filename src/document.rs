@@ -108,7 +108,12 @@ impl Document {
     }
 
     pub fn dirty(&self) -> bool {
-        self.text != self.saved || self.temporary.is_some()
+        self.unsaved_changes() || self.temporary.is_some()
+    }
+
+    /// Whether the live text differs from its saved backing (including temporary).
+    pub fn unsaved_changes(&self) -> bool {
+        self.text != self.saved
     }
 
     pub fn selection(&self) -> Option<std::ops::Range<usize>> {

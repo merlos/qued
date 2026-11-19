@@ -45,9 +45,11 @@ pub struct Job {
     message: usize,
     snapshot: Option<Attachment>,
     proposal: Option<String>,
+    edit_staged: bool,
     compact: bool,
     prompt: String,
     usage_pending: bool,
+    waiting_for_continuation: bool,
 }
 pub struct PermissionPrompt {
     pub target: Target,
@@ -88,7 +90,8 @@ const CHAT_MODE_PROMPT: &str = "\
 Active mode: Qued CHAT (read-only).
 No document edit tool is available. Answer questions, critique text, outline, or
 show suggested changes in chat only. A current selection or pinned snapshot may
-be attached as important context. Do not call propose_edit or claim to have changed
+be attached as important context. Do not call propose_edit, propose_edits, or
+propose_document_chunk, or finalize_edits, or claim to have changed
 the document, even when the agent persona normally writes or revises documents.";
 
 const AGENT_MODE_PROMPT: &str = "\
@@ -96,11 +99,20 @@ Active mode: Qued AGENT.
 The complete open document is attached as an immutable snapshot. A selected or
 pinned excerpt is especially important context but does not limit where you may edit.
 Only when the user requests a document change and the necessary details are known,
-call propose_edit at most once with the complete resulting document, including all
-preserved content and frontmatter. Do not put explanation or an extra Markdown
-wrapper around the replacement. For questions or review-only requests, answer in
+prefer propose_edits with small exact original/replacement changes. Each original
+must uniquely match the ORIGINAL snapshot; add immediate prefix/suffix context to
+disambiguate repeated text. For insertions use an empty original with unique context,
+or position start/end with empty original/context. Changes may arrive in multiple
+complete batches, but must not overlap. Preserve untouched content and frontmatter.
+For a small complete rewrite, propose_edit is a fallback and cannot be mixed with
+targeted edits. For a new draft or complete rewrite too large for one response, use
+propose_document_chunk: send the complete resulting document in ordered text chunks,
+including all preserved content and metadata. The first chunk starts a NEW replacement,
+not an append to the original. Do not mix chunks with other edit formats.
+Call finalize_edits exactly once AFTER all batches/chunks, then finish with
+a short summary, not a copy of the resulting document. For questions or review-only requests, answer in
 chat without proposing an edit; ask before making speculative changes.
-propose_edit only queues an edit. After successful generation Qued validates
+Edit tools only stage changes. Finalization does not apply or save them. After successful generation Qued validates
 the snapshot, applies and saves the open document, and displays Keep/Undo review.
 Do not claim edits or saves succeeded before host confirmation. Ordinary chat text
 cannot modify the document.";
@@ -148,12 +160,13 @@ impl App {
             Some("Waiting for answers")
         } else if self.live.permission.is_some() {
             Some("Waiting for permission")
-        } else if job.proposal.is_some() {
+        } else if job.proposal.is_some() || job.edit_staged {
             Some("Preparing edit")
-        } else if self
-            .messages
-            .get(job.message)
-            .is_some_and(|message| !message.text.is_empty())
+        } else if !job.waiting_for_continuation
+            && self
+                .messages
+                .get(job.message)
+                .is_some_and(|message| !message.text.is_empty())
         {
             Some("Streaming")
         } else {
@@ -277,7 +290,13 @@ impl App {
             history,
             workspace: self.workspace.clone(),
             compact,
-            allow_edits: mode == AgentMode::Agent,
+            allow_edits: mode == AgentMode::Agent && !compact,
+            document_snapshot: if mode == AgentMode::Agent && !compact {
+                snapshot.as_ref().map(|snapshot| snapshot.text.clone())
+            } else {
+                None
+            },
+            max_output_tokens: self.config.output_limit(&self.config.model),
         };
         let (sender, receiver) = mpsc::channel(64);
         let task = runtime.spawn(backend::run(request, sender));
@@ -290,9 +309,11 @@ impl App {
             message,
             snapshot,
             proposal: None,
+            edit_staged: false,
             compact,
             prompt: prompt.into(),
             usage_pending: false,
+            waiting_for_continuation: false,
         });
         self.notify(
             Level::Info,
@@ -339,9 +360,12 @@ impl App {
                     }
                 }
                 Event::Text(text) => {
-                    if let Some(job) = &self.live.job
+                    if let Some(job) = &mut self.live.job
                         && let Some(message) = self.messages.get_mut(job.message)
                     {
+                        if !text.is_empty() {
+                            job.waiting_for_continuation = false;
+                        }
                         message.text.push_str(&text);
                     }
                 }
@@ -398,6 +422,11 @@ impl App {
                 Event::Proposal(text) => {
                     if let Some(job) = &mut self.live.job {
                         job.proposal = Some(text);
+                    }
+                }
+                Event::EditStaged => {
+                    if let Some(job) = &mut self.live.job {
+                        job.edit_staged = true;
                     }
                 }
                 Event::Done(history) => {
@@ -763,7 +792,18 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n");
             if prompt.reply.send(answers).is_ok() {
-                self.message("you", format!("Answers to {}:\n{summary}", prompt.agent));
+                let text = format!("Answers to {}:\n{summary}", prompt.agent);
+                if let Some(index) = self.active_message_index() {
+                    // Questions/confirmed answers precede the whole ongoing agent
+                    // response, including comments streamed before the question tool.
+                    self.message_before(index, "you", text);
+                    if let Some(job) = &mut self.live.job {
+                        job.message += 1;
+                        job.waiting_for_continuation = true;
+                    }
+                } else {
+                    self.message("you", text);
+                }
                 self.notify(Level::Success, "Answers sent; agent continuing");
             } else {
                 self.notify(
@@ -1116,6 +1156,184 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_questions_precede_spinner_and_all_agent_comments_without_losing_attribution() {
+        use crate::{app::MessageSelection, questions::Action};
+        use ratatui::{Terminal, backend::TestBackend};
+        let (_runtime, mut app, sender) = job_app(None, false);
+        let original_index = app.active_message_index().unwrap();
+        sender
+            .try_send(Event::Text("Intro before question.\n".into()))
+            .unwrap();
+        sender
+            .try_send(Event::Usage(backend::RequestUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                rounds: 1,
+                seconds: 1.0,
+                ..Default::default()
+            }))
+            .unwrap();
+        let (reply, mut decision) = oneshot::channel();
+        sender
+            .try_send(Event::Question {
+                request: crate::questions::tests::request(1),
+                reply,
+            })
+            .unwrap();
+        app.poll_live();
+        app.message_selection = Some(MessageSelection {
+            message: original_index,
+            anchor: 0,
+            cursor: 5,
+        });
+        app.agent = 1;
+        app.config.model = "mock".into();
+        app.composer = "Unsent draft".into();
+        app.resolve_question_action(Action::Pick(0));
+        assert_eq!(decision.try_recv().unwrap()[0].answer, "First");
+        let active = app.active_message_index().unwrap();
+        assert_eq!(active, original_index + 1);
+        assert!(
+            app.messages[original_index]
+                .text
+                .contains("Question 1?\n   First")
+        );
+        assert_eq!(app.messages[active].text, "Intro before question.\n");
+        assert_eq!(app.messages[active].agent.as_deref(), Some("Planner"));
+        assert_eq!(
+            app.messages[active].model.as_deref(),
+            Some("ollama::fixture:26b")
+        );
+        assert_eq!(app.message_selection.as_ref().unwrap().message, active);
+        app.focus = crate::app::Focus::Chat;
+        app.key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(app.clipboard, "Intro");
+        assert_eq!(app.composer, "Unsent draft");
+        assert_eq!(app.activity_label(), Some("Thinking"));
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.find("Question 1?").unwrap() < screen.find("First").unwrap());
+        assert!(screen.find("First").unwrap() < screen.find("Thinking...").unwrap());
+        assert!(
+            screen.find("Thinking...").unwrap() < screen.find("Intro before question.").unwrap()
+        );
+        sender
+            .try_send(Event::Text("Comment after answer.".into()))
+            .unwrap();
+        sender
+            .try_send(Event::Usage(backend::RequestUsage {
+                input_tokens: 11,
+                output_tokens: 4,
+                rounds: 1,
+                seconds: 1.0,
+                ..Default::default()
+            }))
+            .unwrap();
+        app.poll_live();
+        assert_eq!(app.activity_label(), Some("Streaming"));
+        assert_eq!(
+            app.messages[active].text,
+            "Intro before question.\nComment after answer."
+        );
+        assert_eq!(
+            app.messages[active].usage.as_ref().unwrap().input_tokens,
+            18
+        );
+        assert_eq!(app.live.usage.input_tokens, 18);
+        assert!(app.messages[original_index].usage.is_none());
+        sender
+            .try_send(Event::Done(vec![ChatMessage::assistant("done")]))
+            .unwrap();
+        app.poll_live();
+        assert!(app.active_message_index().is_none());
+        assert_eq!(
+            app.messages[active].usage.as_ref().unwrap().output_tokens,
+            7
+        );
+        let dir = tempfile::tempdir().unwrap();
+        app.live.store = Some(Store::new(dir.path().join("state")).unwrap());
+        app.live.session_id = uuid::Uuid::new_v4().to_string();
+        app.config.persist_sessions = true;
+        app.config.recovery = false;
+        app.checkpoint_state().unwrap();
+        let saved = app
+            .live
+            .store
+            .as_ref()
+            .unwrap()
+            .resume(&app.live.session_id)
+            .unwrap();
+        assert!(
+            saved.messages[original_index]
+                .text
+                .contains("Answers to Planner")
+        );
+        assert_eq!(saved.messages[active].text, app.messages[active].text);
+    }
+
+    #[test]
+    fn repeated_question_rounds_keep_summaries_before_continuation_and_cancellation_marker() {
+        use crate::questions::Action;
+        let (_runtime, mut app, sender) = job_app(None, false);
+        let original = app.active_message_index().unwrap();
+        sender
+            .try_send(Event::Text("Agent commentary.\n".into()))
+            .unwrap();
+        app.poll_live();
+        for round in 1..=2 {
+            let (reply, mut decision) = oneshot::channel();
+            let mut request = crate::questions::tests::request(1);
+            request.questions[0].question = format!("Round {round}?");
+            sender.try_send(Event::Question { request, reply }).unwrap();
+            app.poll_live();
+            app.resolve_question_action(Action::Pick(0));
+            decision.try_recv().unwrap();
+            assert_eq!(app.active_message_index(), Some(original + round));
+            assert!(
+                app.messages[original + round - 1]
+                    .text
+                    .contains(&format!("Round {round}?"))
+            );
+            sender
+                .try_send(Event::Text(format!("After round {round}.\n")))
+                .unwrap();
+            app.poll_live();
+        }
+        app.cancel_live();
+        assert_eq!(
+            app.messages[original + 2].text,
+            "Agent commentary.\nAfter round 1.\nAfter round 2.\n\n[Cancelled; no edits applied]"
+        );
+        assert!(!app.messages[original].text.contains("Cancelled"));
+        assert!(!app.messages[original + 1].text.contains("Cancelled"));
+    }
+
+    #[test]
+    fn closed_question_reply_does_not_insert_or_reorder_transcript() {
+        let (_runtime, mut app, decision) = question_app(1);
+        let index = app.active_message_index().unwrap();
+        let len = app.messages.len();
+        drop(decision);
+        app.resolve_question_action(crate::questions::Action::Pick(0));
+        assert_eq!(app.active_message_index(), Some(index));
+        assert_eq!(app.messages.len(), len);
+        assert_eq!(app.activity_label(), Some("Thinking"));
+        assert!(matches!(app.level, Level::Warning));
+    }
+
+    #[test]
     fn questionnaire_input_is_unicode_safe_preserves_editor_and_blocks_mode_rotation() {
         use crate::questions::Action;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1307,12 +1525,12 @@ mod tests {
         assert!(!chat.contains("call propose_edit at most once"));
         let agent = system_prompt("Review a blog.", workspace, AgentMode::Agent, false);
         for rule in [
-            "complete resulting document",
+            "ORIGINAL snapshot",
             "frontmatter",
             "does not limit where",
-            "at most once",
+            "finalize_edits exactly once",
             "review-only requests",
-            "only queues an edit",
+            "only stage changes",
             "host confirmation",
             "Keep/Undo review",
         ] {
@@ -1355,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_clears_review_without_saving_later_manual_text_and_checkpoint_survives_exit() {
+    fn keep_saves_later_manual_text_and_checkpoint_survives_exit() {
         let (_dir, mut app, path) = applied_app("old\nend\n", "new\nend\n");
         app.focus = crate::app::Focus::Editor;
         app.document.move_to(app.document.text.len(), false);
@@ -1363,8 +1581,8 @@ mod tests {
         assert_eq!(app.review.as_ref().unwrap().pending(), 1);
         app.command("/changes keep").unwrap();
         assert!(app.review.is_none());
-        assert!(app.document.dirty());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\nend\n");
+        assert!(!app.document.dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\nend\nmanual");
         app.finish_state().unwrap();
         let store = app.live.store.as_ref().unwrap();
         let ids = store.list("recovery").unwrap();
@@ -1373,8 +1591,143 @@ mod tests {
             crate::document::Document::from_recovery(store.recover(&ids[0]).unwrap()).unwrap();
         assert_eq!(restored.text, "old\nend\n");
         assert!(restored.dirty());
-        restored.save(None).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\nend\n");
+        // The independent pre-edit baseline intentionally refuses to overwrite
+        // later user adjustments; the old text can always be recovered elsewhere.
+        assert!(restored.save(None).is_err());
+        restored
+            .save(Some(&path.with_file_name("recovered.md")))
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\nend\nmanual");
+    }
+
+    #[test]
+    fn keep_saves_adjustments_inside_protected_agent_text_via_shortcut() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_dir, mut app, path) = applied_app("Old sentence.", "New sentence.");
+        app.focus = crate::app::Focus::Editor;
+        app.document.move_to(0, false);
+        app.document.replace(0..4, "");
+        app.document.move_to(app.document.text.len(), false);
+        app.paste(" Additional sentence 界.");
+        assert!(app.review.as_ref().unwrap().hunks[0].protected);
+        assert!(app.document.dirty());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(app.review.is_none());
+        assert_eq!(app.document.text, "sentence. Additional sentence 界.");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), app.document.text);
+        assert!(!app.document.dirty());
+        // Keeping does not add a document-edit transaction or reset manual history.
+        app.document.undo();
+        assert_eq!(app.document.text, "sentence.");
+    }
+
+    #[test]
+    fn failed_keep_preserves_manual_adjustments_review_and_external_file() {
+        let (_dir, mut app, path) = applied_app("old", "new");
+        app.document.move_to(3, false);
+        app.document.insert(" manual");
+        app.sync_review();
+        // Approval must preserve the review state established by normal editing.
+        let revision = app.document.revision;
+        std::fs::write(&path, "external").unwrap();
+        app.command("/changes keep-all").unwrap();
+        assert_eq!(app.document.text, "new manual");
+        assert_eq!(app.document.revision, revision);
+        assert_eq!(app.review.as_ref().unwrap().pending(), 0);
+        assert!(app.review.as_ref().unwrap().hunks[0].protected);
+        assert!(app.document.dirty());
+        assert!(matches!(app.level, Level::Error));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        app.document.undo();
+        assert_eq!(app.document.text, "new");
+    }
+
+    #[test]
+    fn keep_validates_disk_even_without_manual_edits_and_supports_temporary_files() {
+        let (_dir, mut app, path) = applied_app("old", "new");
+        std::fs::write(&path, "external").unwrap();
+        app.command("/changes keep").unwrap();
+        assert_eq!(app.review.as_ref().unwrap().pending(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+        let mut app = App::new(None).unwrap();
+        app.config.recovery = false;
+        app.apply_agent_edit(0..0, "draft").unwrap();
+        app.focus = crate::app::Focus::Editor;
+        app.document.move_to(5, false);
+        app.paste(" adjusted");
+        app.command("/changes keep-all").unwrap();
+        assert!(app.review.is_none());
+        assert!(app.document.is_temporary());
+        assert!(app.document.path.is_none());
+        assert_eq!(app.document.recovery().saved, "draft adjusted");
+    }
+
+    #[test]
+    fn protected_manual_adjustments_keep_a_clickable_save_and_approve_action() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::{Terminal, backend::TestBackend};
+        let (_dir, mut app, path) = applied_app("old", "new");
+        app.focus = crate::app::Focus::Editor;
+        app.document.move_to(3, false);
+        app.paste(" adjusted");
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Manual adjustments"));
+        assert!(screen.contains("UNSAVED manual adjustments"));
+        let (rect, _, keep) = app.review_buttons[0];
+        assert!(keep);
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.review.is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new adjusted");
+        assert!(!app.document.unsaved_changes());
+    }
+
+    #[test]
+    fn multiple_targeted_changes_are_one_undoable_transaction_and_keep_does_not_add_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("draft.md");
+        std::fs::write(&path, "one\nmiddle\ntwo\n").unwrap();
+        let mut app = App::new(Some(&path)).unwrap();
+        app.config.recovery = false;
+        app.document.move_to(app.document.text.len(), false);
+        app.document.insert("manual before request");
+        let original = app.document.text.clone();
+        let mut staged = crate::edits::StagedEdits::new(original.clone()).unwrap();
+        for (old, new) in [("one", "ONE"), ("two", "TWO")] {
+            staged
+                .stage(
+                    serde_json::from_value(serde_json::json!({
+                        "edits":[{"original":old,"replacement":new}]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        app.apply_agent_edit(0..original.len(), &staged.finalize().unwrap())
+            .unwrap();
+        assert_eq!(app.review.as_ref().unwrap().pending(), 2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), app.document.text);
+        app.command("/changes keep-all").unwrap();
+        let saved = app.document.text.clone();
+        app.document.undo();
+        assert_eq!(app.document.text, original);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        app.document.redo();
+        assert_eq!(app.document.text, saved);
     }
 
     #[test]
@@ -1483,9 +1836,11 @@ mod tests {
             message,
             snapshot,
             proposal: None,
+            edit_staged: false,
             compact,
             prompt: "revise".into(),
             usage_pending: false,
+            waiting_for_continuation: false,
         });
         (runtime, app, sender)
     }

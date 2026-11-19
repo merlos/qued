@@ -331,17 +331,24 @@ class SmokeTests(unittest.TestCase):
 class FakeProvider:
     """Exercises genai's real HTTP/SSE adapter against a local fixture server."""
 
-    def __init__(self, read_path, deny=False, operation="read_file", questions=None):
+    def __init__(self, read_path, deny=False, operation="read_file", questions=None, responses=None):
         self.requests = []
         self.read_path = str(read_path)
         self.deny = deny
         self.operation = operation
         self.questions = questions
+        self.responses = responses
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass
+
+            def handle(self):
+                try:
+                    super().handle()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # Cancellation intentionally closes in-flight SSE connections.
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -357,12 +364,33 @@ class FakeProvider:
                     self.wfile.write(("data: " + json.dumps(data) + "\n\n").encode())
                     self.wfile.flush()
 
-                if turn == 1 or (turn == 2 and not owner.deny):
+                if owner.responses is not None:
+                    response = owner.responses[turn - 1] if turn <= len(owner.responses) else {"content": "Done"}
+                    if gate := response.get("gate"):
+                        gate.wait(timeout=5)
+                    calls = response.get("tools", [])
+                    if calls:
+                        if response.get("content"):
+                            chunk({"role": "assistant", "content": response["content"]})
+                        chunk({"role": "assistant", "tool_calls": [
+                            {"index": index, "id": f"call-{turn}-{index}", "type": "function", "function": {"name": call["name"], "arguments": json.dumps(call.get("arguments", {}))}}
+                            for index, call in enumerate(calls)
+                        ]})
+                    else:
+                        chunk({"role": "assistant", "content": response.get("content", "Done")})
+                    chunk({}, response.get("finish", "tool_calls" if calls else "stop"))
+                elif turn == 1 or (turn == 2 and not owner.deny):
                     name = owner.operation if turn == 1 else "propose_edit"
                     arguments = {"url" if owner.operation == "webfetch" else "path": owner.read_path} if turn == 1 else {"replacement": "HELLO"}
                     if turn == 1 and owner.operation == "question":
                         arguments = {"questions": owner.questions}
-                    chunk({"role": "assistant", "tool_calls": [{"index": 0, "id": f"call-{turn}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]})
+                    if turn == 2 and "propose_edit" not in [tool["function"]["name"] for tool in body.get("tools", [])]:
+                        name = "read_file"
+                        arguments = {"path": owner.read_path}
+                    calls = [{"index": 0, "id": f"call-{turn}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]
+                    if turn == 2 and name == "propose_edit":
+                        calls.append({"index": 1, "id": f"finalize-{turn}", "type": "function", "function": {"name": "finalize_edits", "arguments": "{}"}})
+                    chunk({"role": "assistant", "tool_calls": calls})
                     chunk({}, "tool_calls")
                 else:
                     chunk({"role": "assistant", "content": "Review " if not owner.deny else "Access "})
@@ -396,6 +424,163 @@ class FakeProvider:
 
 
 class LiveSmokeTests(unittest.TestCase):
+    def launch_edit_fixture(self, directory, responses, mode="agent"):
+        root = Path(directory)
+        doc = root / "draft.md"
+        doc.write_text("one\nmiddle\ntwo\n")
+        config = root / "config"
+        (config / "qued").mkdir(parents=True)
+        (config / "qued/config.yaml").write_text(
+            f"model: genai_1::test\nagent_modes:\n  Planner: {mode}\n"
+            "max_output_tokens: 16384\nmodel_output_limits:\n  genai_1::test: 12288\n"
+        )
+        provider = FakeProvider(root / "unused", responses=responses)
+        self.addCleanup(provider.close)
+        app = TerminalApp(doc, config, extra_env={"GENAI_1_ENDPOINT": provider.endpoint, "GENAI_1_API_KEY": "local-test-placeholder"}, backend=b"genai_1::test", start_in_editor=False)
+        self.addCleanup(app.close)
+        return doc, provider, app
+
+    @staticmethod
+    def edit_batch(original="one", replacement="ONE"):
+        return {"tools": [{"name": "propose_edits", "arguments": {"edits": [{"original": original, "replacement": replacement}]}}]}
+
+    def test_targeted_batches_finalize_then_keep_saves_manual_adjustments(self):
+        responses = [
+            self.edit_batch(),
+            self.edit_batch("two", "TWO"),
+            {"tools": [{"name": "finalize_edits"}]},
+            {"content": "Review ready"},
+        ]
+        with tempfile.TemporaryDirectory(prefix="qued-batches-") as directory:
+            doc, provider, app = self.launch_edit_fixture(directory, responses)
+            app.send(b"Revise the first and last lines.\r", b"SAVED")
+            self.assertEqual(doc.read_text(), "ONE\nmiddle\nTWO\n")
+            self.assertEqual(len(provider.requests), 4)
+            first = provider.requests[0]
+            self.assertEqual(first.get("max_tokens", first.get("max_completion_tokens")), 12288)
+            names = [tool["function"]["name"] for tool in first["tools"]]
+            self.assertIn("propose_edits", names)
+            self.assertIn("finalize_edits", names)
+            # The cursor starts in the first change: delete a letter, then add text.
+            app.send(b"\t\x1b[3~\x05\x1b[200~ More.\x1b[201~", b"More.")
+            self.assertEqual(doc.read_text(), "ONE\nmiddle\nTWO\n")
+            app.send(b"\t/changes keep-all\r", b"Changes kept")
+            self.assertEqual(doc.read_text(), "NE More.\nmiddle\nTWO\n")
+            app.send(b"\x11")
+            app.finish()
+
+    def test_truncated_or_invalid_edit_turns_never_apply_partial_batches(self):
+        finalize = {"tools": [{"name": "finalize_edits"}]}
+        cases = [
+            ([dict(self.edit_batch(), finish="length")], b"configured output limit"),
+            ([self.edit_batch(), {"content": "incomplete", "finish": "length"}], b"configured output limit"),
+            ([self.edit_batch(), finalize, {"content": "incomplete", "finish": "length"}], b"configured output limit"),
+            ([self.edit_batch(), {"content": "Done"}], b"not finalized"),
+            ([self.edit_batch(), self.edit_batch("one", "again")], b"overlap"),
+            ([self.edit_batch(), finalize, self.edit_batch("two", "TWO")], b"already finalized"),
+            ([{"tools": [{"name": "propose_edits", "arguments": {"edits": [{"original": "missing", "replacement": "bad"}]}}]}], b"not found"),
+        ]
+        for responses, error in cases:
+            with self.subTest(error=error, responses=responses), tempfile.TemporaryDirectory(prefix="qued-truncation-") as directory:
+                doc, provider, app = self.launch_edit_fixture(directory, responses)
+                app.send(b"Revise this document.\r", error)
+                self.assertEqual(doc.read_text(), "one\nmiddle\ntwo\n")
+                if error == b"configured output limit":
+                    self.assertIn(b"12288 tokens", app.output)
+                self.assertNotIn(b"+ ONE", app.output)
+                app.send(b"\x11")
+                app.finish()
+
+    def test_edit_tools_are_rejected_in_chat_and_compaction_even_if_returned(self):
+        for compact in (False, True):
+            with self.subTest(compact=compact), tempfile.TemporaryDirectory(prefix="qued-readonly-edits-") as directory:
+                doc, provider, app = self.launch_edit_fixture(directory, [self.edit_batch()], mode="chat")
+                app.send(b"/compact\r" if compact else b"Review this.\r", b"tool calls during compaction" if compact else b"editing is unavailable")
+                names = [tool["function"]["name"] for tool in provider.requests[0].get("tools", [])]
+                self.assertNotIn("propose_edits", names)
+                self.assertNotIn("finalize_edits", names)
+                self.assertEqual(doc.read_text(), "one\nmiddle\ntwo\n")
+                app.send(b"\x11")
+                app.finish()
+
+    def test_complete_document_chunks_are_joined_once_and_saved_transactionally(self):
+        responses = [
+            {"tools": [{"name": "propose_document_chunk", "arguments": {"text": "New first line\n"}}]},
+            {"tools": [{"name": "propose_document_chunk", "arguments": {"text": "New last line 界\n"}}]},
+            {"tools": [{"name": "finalize_edits"}]},
+            {"content": "Review ready"},
+        ]
+        with tempfile.TemporaryDirectory(prefix="qued-document-chunks-") as directory:
+            doc, provider, app = self.launch_edit_fixture(directory, responses)
+            app.send(b"Rewrite this document.\r", b"SAVED")
+            self.assertEqual(doc.read_text(), "New first line\nNew last line 界\n")
+            app.send(b"/changes undo-all\r", b"Changes undone")
+            self.assertEqual(doc.read_text(), "one\nmiddle\ntwo\n")
+            app.send(b"\x11")
+            app.finish()
+
+    def test_cancellation_discards_staged_batches_and_finalized_edits(self):
+        for finalized in (False, True):
+            gate = threading.Event()
+            responses = [self.edit_batch()]
+            if finalized:
+                responses.append({"tools": [{"name": "finalize_edits"}]})
+            responses.append({"content": "Review ready", "gate": gate})
+            with self.subTest(finalized=finalized), tempfile.TemporaryDirectory(prefix="qued-cancel-batches-") as directory:
+                doc, provider, app = self.launch_edit_fixture(directory, responses)
+                self.addCleanup(gate.set)
+                app.send(b"Revise this.\r", b"Preparing edit...")
+                app.send(b"\x1b", b"Cancelled")
+                gate.set()
+                self.assertEqual(doc.read_text(), "one\nmiddle\ntwo\n")
+                app.send(b"\x11")
+                app.finish()
+
+    def test_external_changes_block_finalized_batches_without_overwriting_disk(self):
+        gate = threading.Event()
+        first = self.edit_batch()
+        first["tools"].append({"name": "finalize_edits"})
+        with tempfile.TemporaryDirectory(prefix="qued-batch-disk-conflict-") as directory:
+            doc, provider, app = self.launch_edit_fixture(directory, [first, {"content": "Review ready", "gate": gate}])
+            self.addCleanup(gate.set)
+            app.send(b"Revise this.\r", b"Preparing edit...")
+            doc.write_text("external change")
+            gate.set()
+            app.wait_for(b"Agent edit not applied or saved")
+            self.assertEqual(doc.read_text(), "external change")
+            self.assertNotIn(b"+ ONE", app.output)
+            app.send(b"\x11")
+            app.finish()
+
+    def test_question_answer_precedes_thinking_and_all_agent_comments(self):
+        gate = threading.Event()
+        responses = [
+            {"content": "Intro before question.", "tools": [{
+                "name": "question", "arguments": {"questions": [{
+                    "question": "Which tone?", "options": [{"label": "Formal"}]
+                }]}
+            }]},
+            {"content": "\nFollow-up comment.", "gate": gate},
+        ]
+        with tempfile.TemporaryDirectory(prefix="qued-question-order-") as directory:
+            doc, provider, app = self.launch_edit_fixture(directory, responses, mode="chat")
+            self.addCleanup(gate.set)
+            app.send(b"Ask me about the tone.\r", b"Question 1 of 1")
+            app.send(b"1", b"Thinking...")
+            visible = "\n".join("".join(row) for row in app.screen)
+            self.assertLess(visible.index("Which tone?"), visible.index("Formal"))
+            self.assertLess(visible.index("Formal"), visible.index("Thinking..."))
+            self.assertLess(visible.index("Thinking..."), visible.index("Intro before question."))
+            gate.set()
+            app.wait_for(b"Agent finished")
+            visible = "\n".join("".join(row) for row in app.screen)
+            self.assertLess(visible.index("Formal"), visible.index("Intro before question."))
+            self.assertLess(visible.index("Intro before question."), visible.index("Follow-up comment."))
+            self.assertEqual(visible.count("Intro before question."), 1)
+            self.assertEqual(doc.read_text(), "one\nmiddle\ntwo\n")
+            app.send(b"\x11")
+            app.finish()
+
     def launch_question_fixture(self, directory, questions, mode="chat", edit=False, persist=False):
         root = Path(directory)
         doc = root / "draft.md"

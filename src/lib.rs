@@ -3,6 +3,7 @@ pub mod backend;
 pub mod config;
 pub mod credentials;
 pub mod document;
+pub mod edits;
 pub mod live;
 pub mod provider;
 pub mod questions;

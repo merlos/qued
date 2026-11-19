@@ -13,6 +13,7 @@ library. Never imply mock responses are live AI or every provider is account-tes
 - `src/app.rs`: application state, actions, commands, context, embedded/default and custom agents, mock proposals.
 - `assets/agents/*.md`: built-in YAML-frontmatter Markdown agent definitions; `build.rs` embeds all files in filename/picker/rotation order. Numbered filenames preserve the built-in order.
 - `src/document.rs`: Unicode-aware document operations, history, safe file handling.
+- `src/edits.rs`: bounded targeted batches and ordered complete-document chunks against immutable snapshots; explicit finalization, exact anchors, overlap/grapheme validation, local result construction.
 - `src/config.rs`: embedded defaults, YAML profiles, semantic theme colors.
 - `src/backend.rs`: genai streaming/tool loop, provider usage/timing, budgets, timeouts, sanitized errors.
 - `src/provider.rs`: validated provider endpoints, model discovery, exact genai targets.
@@ -44,10 +45,17 @@ they acquire real complexity; do not create empty placeholder hierarchies.
   filename; explicit Save As migrates to the real file for subsequent auto-saves.
 - Automatic apply/save is transactional, one undoable edit, with disk-baseline checks.
   Failure must leave the editor and destination unchanged.
-- Live pending edits are already on disk. Keep clears review state; review Undo saves
+- Live pending edits are already on disk. Keep saves the current buffer including
+  manual adjustments before clearing review state; failed saves preserve review.
+  Review Undo saves
   a targeted reversal, checks original replacement content, and preserves manual edits.
 - Rebase untouched review ranges after manual edits; protect overlapping edits from
-  review Undo. Ordinary editor undo/redo remains unsaved until an explicit save.
+  review Undo. Ordinary editor undo/redo remains unsaved until an explicit save
+  (including Keep during live review).
+- Live edit batches/chunks are staged only against the original snapshot and require
+  explicit finalization plus successful overall completion. Invalid batches, truncation,
+  cancellation, and timeout must discard the entire staged set. Chat and compaction
+  must reject all edit tools locally. Capture output limits per request.
 - Offline /demo and /rewrite remain unsaved mock previews; saving excludes them.
 - Do not overwrite external changes or discard dirty content without confirmation.
 - Network/provider integration must go behind a backend boundary and never block rendering.
@@ -58,6 +66,9 @@ they acquire real complexity; do not create empty placeholder hierarchies.
   current selections and pinned snapshots are important context, not edit boundaries.
 - Cancellation must discard generated proposals and prevent late events mutating a new session/document.
 - Question drafts stay local/in-memory until submission; batches require explicit summary confirmation. Confirmed answers are context, never file/network permission. Cancellation/timeout must close the questionnaire and discard unfinished drafts.
+- Confirmed question/answer summaries belong before the ongoing agent message;
+  rebase its job/selection indices on insertion so spinner, subsequent comments,
+  usage and failure markers stay with the captured original agent/model.
 - Keep/Undo uses dedicated modified shortcuts. Typing edits the live document;
   deleted diff rows and headers are never editable document positions.
 - Compaction must reject tool calls, even if a provider returns them without declared tools.
