@@ -378,7 +378,8 @@ impl Document {
         let backing = self
             .temporary
             .as_ref()
-            .map(|dir| dir.path().join("document.md"));
+            .map(|dir| absolute(&dir.path().join("document.md")))
+            .transpose()?;
         let path = absolute(
             requested
                 .or(self.path.as_deref())
@@ -523,6 +524,9 @@ mod tests {
             .path()
             .join("document.md");
         assert_eq!(fs::read_to_string(&backing).unwrap(), "draft");
+        // Saving again must recognize the existing backing on platforms whose
+        // canonical paths use a different spelling (for example, \\?\ on Windows).
+        document.save(None).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
